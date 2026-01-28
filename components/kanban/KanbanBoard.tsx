@@ -94,20 +94,23 @@ export function KanbanBoard() {
     const [error, setError] = useState<string | null>(null)
     const [ignoredPlanIds, setIgnoredPlanIds] = useState<string[]>([]) // To suppress ghost plans during deletion
 
+    const [isColumnsLoaded, setIsColumnsLoaded] = useState(false)
+
     // Load custom columns
     useEffect(() => {
         const savedColumns = localStorage.getItem('kanban-custom-columns')
         if (savedColumns) {
             setCustomColumns(JSON.parse(savedColumns))
         }
+        setIsColumnsLoaded(true)
     }, [])
 
     // Save custom columns
     useEffect(() => {
-        if (customColumns.length > 0) {
+        if (isColumnsLoaded) {
             localStorage.setItem('kanban-custom-columns', JSON.stringify(customColumns))
         }
-    }, [customColumns])
+    }, [customColumns, isColumnsLoaded])
 
     const allColumns = [...DEFAULT_COLUMNS, ...customColumns]
 
