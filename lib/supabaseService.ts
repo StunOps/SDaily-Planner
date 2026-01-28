@@ -1,0 +1,708 @@
+'use client'
+
+import { supabase } from './supabaseClient'
+export { supabase }
+import { Plan, KanbanCard, Goal, Revenue, TimeSlot, Attachment, ChecklistItem, Comment } from './types'
+
+// ============================================
+// PLANS - CRUD Operations
+// ============================================
+
+export async function fetchPlans(): Promise<Plan[]> {
+    const { data: plans, error } = await supabase
+        .from('plans')
+        .select('*')
+        .order('date', { ascending: true })
+
+    if (error) {
+        console.error('Error fetching plans:', error)
+        return []
+    }
+
+    if (!plans || plans.length === 0) return []
+
+    const planIds = plans.map(p => p.id)
+
+    // Batch fetch all related data in parallel
+    const [allTimeSlots, allAttachments] = await Promise.all([
+        supabase.from('plan_time_slots').select('*').in('plan_id', planIds),
+        supabase.from('plan_attachments').select('*').in('plan_id', planIds)
+    ])
+
+    // Group by plan_id
+    const timeSlotsMap = groupByField(allTimeSlots.data || [], 'plan_id')
+    const attachmentsMap = groupByField(allAttachments.data || [], 'plan_id')
+
+    return plans.map(plan => ({
+        id: plan.id,
+        title: plan.title,
+        description: plan.description,
+        date: plan.date,
+        hasDueDate: plan.has_due_date,
+        dueDate: plan.due_date,
+        timeSlots: (timeSlotsMap[plan.id] || []).map((s: Record<string, string>) => ({ id: s.id, time: s.time, description: s.description })),
+        attachments: (attachmentsMap[plan.id] || []).map((a: Record<string, string>) => ({ id: a.id, type: a.type, name: a.name, url: a.url })),
+        completed: plan.completed,
+        createdAt: plan.created_at
+    } as Plan))
+}
+
+// Helper function to group array by key (for plans)
+function groupByField<T extends Record<string, unknown>>(arr: T[], key: string): Record<string, T[]> {
+    return arr.reduce((acc, item) => {
+        const k = item[key] as string
+        if (!acc[k]) acc[k] = []
+        acc[k].push(item)
+        return acc
+    }, {} as Record<string, T[]>)
+}
+
+async function fetchPlanTimeSlots(planId: string): Promise<TimeSlot[]> {
+    const { data, error } = await supabase
+        .from('plan_time_slots')
+        .select('*')
+        .eq('plan_id', planId)
+        .order('time', { ascending: true })
+
+    if (error) {
+        console.error('Error fetching time slots:', error)
+        return []
+    }
+
+    return (data || []).map(slot => ({
+        id: slot.id,
+        time: slot.time,
+        description: slot.description
+    }))
+}
+
+async function fetchPlanAttachments(planId: string): Promise<Attachment[]> {
+    const { data, error } = await supabase
+        .from('plan_attachments')
+        .select('*')
+        .eq('plan_id', planId)
+
+    if (error) {
+        console.error('Error fetching attachments:', error)
+        return []
+    }
+
+    return (data || []).map(att => ({
+        id: att.id,
+        type: att.type,
+        name: att.name,
+        url: att.url
+    }))
+}
+
+export async function createPlan(plan: Plan): Promise<Plan | null> {
+    const { data, error } = await supabase
+        .from('plans')
+        .insert({
+            id: plan.id,
+            title: plan.title,
+            description: plan.description,
+            date: plan.date,
+            has_due_date: plan.hasDueDate,
+            due_date: plan.dueDate,
+            completed: plan.completed,
+            created_at: plan.createdAt
+        })
+        .select()
+        .single()
+
+    if (error) {
+        console.error('Error creating plan:', error)
+        return null
+    }
+
+    // Insert time slots
+    if (plan.timeSlots && plan.timeSlots.length > 0) {
+        await supabase.from('plan_time_slots').insert(
+            plan.timeSlots.map(slot => ({
+                id: slot.id,
+                plan_id: plan.id,
+                time: slot.time,
+                description: slot.description
+            }))
+        )
+    }
+
+    // Insert attachments
+    if (plan.attachments && plan.attachments.length > 0) {
+        await supabase.from('plan_attachments').insert(
+            plan.attachments.map(att => ({
+                id: att.id,
+                plan_id: plan.id,
+                type: att.type,
+                name: att.name,
+                url: att.url
+            }))
+        )
+    }
+
+    return plan
+}
+
+export async function updatePlan(plan: Plan): Promise<boolean> {
+    const { error } = await supabase
+        .from('plans')
+        .update({
+            title: plan.title,
+            description: plan.description,
+            date: plan.date,
+            has_due_date: plan.hasDueDate,
+            due_date: plan.dueDate,
+            completed: plan.completed
+        })
+        .eq('id', plan.id)
+
+    if (error) {
+        console.error('Error updating plan:', error)
+        return false
+    }
+
+    return true
+}
+
+export async function deletePlan(planId: string): Promise<boolean> {
+    const { error } = await supabase
+        .from('plans')
+        .delete()
+        .eq('id', planId)
+
+    if (error) {
+        console.error('Error deleting plan:', error)
+        return false
+    }
+
+    return true
+}
+
+// ============================================
+// KANBAN CARDS - CRUD Operations
+// ============================================
+
+export async function fetchCards(): Promise<KanbanCard[]> {
+    const { data: cards, error } = await supabase
+        .from('kanban_cards')
+        .select('*')
+        .order('created_at', { ascending: false })
+
+    if (error) {
+        console.error('Error fetching cards:', error)
+        return []
+    }
+
+    if (!cards || cards.length === 0) return []
+
+    const cardIds = cards.map(c => c.id)
+
+    // Batch fetch all related data in parallel
+    const [allTimeSlots, allChecklist, allComments, allAttachments] = await Promise.all([
+        supabase.from('card_time_slots').select('*').in('card_id', cardIds),
+        supabase.from('card_checklist_items').select('*').in('card_id', cardIds),
+        supabase.from('card_comments').select('*').in('card_id', cardIds),
+        supabase.from('card_attachments').select('*').in('card_id', cardIds)
+    ])
+
+    // Group by card_id
+    const timeSlotsMap = groupBy(allTimeSlots.data || [], 'card_id')
+    const checklistMap = groupBy(allChecklist.data || [], 'card_id')
+    const commentsMap = groupBy(allComments.data || [], 'card_id')
+    const attachmentsMap = groupBy(allAttachments.data || [], 'card_id')
+
+    return cards.map(card => ({
+        id: card.id,
+        title: card.title,
+        description: card.description,
+        status: card.status,
+        startDate: card.start_date,
+        endDate: card.end_date,
+        linkedPlanId: card.linked_plan_id,
+        timeSlots: (timeSlotsMap[card.id] || []).map((s: Record<string, string>) => ({ id: s.id, time: s.time, description: s.description })),
+        checklist: (checklistMap[card.id] || []).map((i: Record<string, unknown>) => ({ id: i.id as string, text: i.text as string, completed: i.completed as boolean })),
+        comments: (commentsMap[card.id] || []).map((c: Record<string, unknown>) => ({ id: c.id as string, text: c.text as string, createdAt: c.created_at as string, isMarkedDone: c.is_marked_done as boolean })),
+        attachments: (attachmentsMap[card.id] || []).map((a: Record<string, string>) => ({ id: a.id, type: a.type, name: a.name, url: a.url })),
+        createdAt: card.created_at
+    } as KanbanCard))
+}
+
+// Helper function to group array by key
+function groupBy<T extends Record<string, unknown>>(arr: T[], key: string): Record<string, T[]> {
+    return arr.reduce((acc, item) => {
+        const k = item[key] as string
+        if (!acc[k]) acc[k] = []
+        acc[k].push(item)
+        return acc
+    }, {} as Record<string, T[]>)
+}
+
+async function fetchCardTimeSlots(cardId: string): Promise<TimeSlot[]> {
+    const { data, error } = await supabase
+        .from('card_time_slots')
+        .select('*')
+        .eq('card_id', cardId)
+        .order('time', { ascending: true })
+
+    if (error) return []
+    return (data || []).map(slot => ({
+        id: slot.id,
+        time: slot.time,
+        description: slot.description
+    }))
+}
+
+async function fetchCardChecklist(cardId: string): Promise<ChecklistItem[]> {
+    const { data, error } = await supabase
+        .from('card_checklist_items')
+        .select('*')
+        .eq('card_id', cardId)
+
+    if (error) return []
+    return (data || []).map(item => ({
+        id: item.id,
+        text: item.text,
+        completed: item.completed
+    }))
+}
+
+async function fetchCardComments(cardId: string): Promise<Comment[]> {
+    const { data, error } = await supabase
+        .from('card_comments')
+        .select('*')
+        .eq('card_id', cardId)
+        .order('created_at', { ascending: true })
+
+    if (error) return []
+    return (data || []).map(comment => ({
+        id: comment.id,
+        text: comment.text,
+        createdAt: comment.created_at,
+        isMarkedDone: comment.is_marked_done
+    }))
+}
+
+async function fetchCardAttachments(cardId: string): Promise<Attachment[]> {
+    const { data, error } = await supabase
+        .from('card_attachments')
+        .select('*')
+        .eq('card_id', cardId)
+
+    if (error) return []
+    return (data || []).map(att => ({
+        id: att.id,
+        type: att.type,
+        name: att.name,
+        url: att.url
+    }))
+}
+
+export async function createCard(card: KanbanCard): Promise<KanbanCard | null> {
+    const { error } = await supabase
+        .from('kanban_cards')
+        .insert({
+            id: card.id,
+            title: card.title,
+            description: card.description,
+            status: card.status,
+            start_date: card.startDate,
+            end_date: card.endDate,
+            linked_plan_id: card.linkedPlanId,
+            created_at: card.createdAt
+        })
+
+    if (error) {
+        console.error('Error creating card:', error)
+        return null
+    }
+
+    // Insert related data
+    if (card.checklist.length > 0) {
+        await supabase.from('card_checklist_items').insert(
+            card.checklist.map(item => ({
+                id: item.id,
+                card_id: card.id,
+                text: item.text,
+                completed: item.completed
+            }))
+        )
+    }
+
+    if (card.comments.length > 0) {
+        await supabase.from('card_comments').insert(
+            card.comments.map(c => ({
+                id: c.id,
+                card_id: card.id,
+                text: c.text,
+                is_marked_done: c.isMarkedDone,
+                created_at: c.createdAt
+            }))
+        )
+    }
+
+    if (card.attachments.length > 0) {
+        await supabase.from('card_attachments').insert(
+            card.attachments.map(att => ({
+                id: att.id,
+                card_id: card.id,
+                type: att.type,
+                name: att.name,
+                url: att.url
+            }))
+        )
+    }
+
+    return card
+}
+
+export async function updateCard(card: KanbanCard): Promise<boolean> {
+    // If this is a virtual plan card (id starts with 'plan-'), do not update to kanban_cards table
+    // It should be handled by updatePlan instead
+    if (card.id.startsWith('plan-')) {
+        return true // Pretend success, but do nothing in this table
+    }
+
+    // Sanitize data for Supabase (convert undefined to null)
+    const updatePayload = {
+        title: card.title,
+        description: card.description || null,
+        status: card.status,
+        start_date: card.startDate || null,
+        end_date: card.endDate || null,
+        linked_plan_id: card.linkedPlanId || null
+    }
+
+    const { error } = await supabase
+        .from('kanban_cards')
+        .update(updatePayload)
+        .eq('id', card.id)
+
+    if (error) {
+        console.error('Error updating card:', JSON.stringify(error, null, 2))
+        return false
+    }
+
+    // Update checklist - delete all and re-insert
+    await supabase.from('card_checklist_items').delete().eq('card_id', card.id)
+    if (card.checklist.length > 0) {
+        await supabase.from('card_checklist_items').insert(
+            card.checklist.map(item => ({
+                id: item.id,
+                card_id: card.id,
+                text: item.text,
+                completed: item.completed
+            }))
+        )
+    }
+
+    // Update comments
+    await supabase.from('card_comments').delete().eq('card_id', card.id)
+    if (card.comments.length > 0) {
+        await supabase.from('card_comments').insert(
+            card.comments.map(c => ({
+                id: c.id,
+                card_id: card.id,
+                text: c.text,
+                is_marked_done: c.isMarkedDone,
+                created_at: c.createdAt
+            }))
+        )
+    }
+
+    // Update attachments
+    await supabase.from('card_attachments').delete().eq('card_id', card.id)
+    if (card.attachments.length > 0) {
+        await supabase.from('card_attachments').insert(
+            card.attachments.map(att => ({
+                id: att.id,
+                card_id: card.id,
+                type: att.type,
+                name: att.name,
+                url: att.url
+            }))
+        )
+    }
+
+    return true
+}
+
+export async function deleteCard(cardId: string): Promise<boolean> {
+    const { error } = await supabase
+        .from('kanban_cards')
+        .delete()
+        .eq('id', cardId)
+
+    if (error) {
+        console.error('Error deleting card:', error)
+        return false
+    }
+
+    return true
+}
+
+// ============================================
+// GOALS - CRUD Operations
+// ============================================
+
+export async function fetchGoals(): Promise<Goal[]> {
+    const { data: goals, error } = await supabase
+        .from('goals')
+        .select('*')
+        .order('created_at', { ascending: false })
+
+    if (error) {
+        console.error('Error fetching goals:', error)
+        return []
+    }
+
+    const goalsWithRelations = await Promise.all(
+        (goals || []).map(async (goal) => {
+            const [checklist, comments] = await Promise.all([
+                fetchGoalChecklist(goal.id),
+                fetchGoalComments(goal.id)
+            ])
+
+            return {
+                id: goal.id,
+                title: goal.title,
+                description: goal.description,
+                goalType: goal.goal_type,
+                targetDate: goal.target_date,
+                budget: goal.budget_target_amount ? {
+                    targetAmount: parseFloat(goal.budget_target_amount),
+                    currentAmount: parseFloat(goal.budget_current_amount || 0),
+                    currency: goal.budget_currency || '₱'
+                } : undefined,
+                checklist,
+                comments,
+                createdAt: goal.created_at
+            } as Goal
+        })
+    )
+
+    return goalsWithRelations
+}
+
+async function fetchGoalChecklist(goalId: string): Promise<ChecklistItem[]> {
+    const { data, error } = await supabase
+        .from('goal_checklist_items')
+        .select('*')
+        .eq('goal_id', goalId)
+
+    if (error) return []
+    return (data || []).map(item => ({
+        id: item.id,
+        text: item.text,
+        completed: item.completed
+    }))
+}
+
+async function fetchGoalComments(goalId: string): Promise<Comment[]> {
+    const { data, error } = await supabase
+        .from('goal_comments')
+        .select('*')
+        .eq('goal_id', goalId)
+        .order('created_at', { ascending: true })
+
+    if (error) return []
+    return (data || []).map(comment => ({
+        id: comment.id,
+        text: comment.text,
+        createdAt: comment.created_at,
+        isMarkedDone: comment.is_marked_done
+    }))
+}
+
+export async function createGoal(goal: Goal): Promise<Goal | null> {
+    const { error } = await supabase
+        .from('goals')
+        .insert({
+            id: goal.id,
+            title: goal.title,
+            description: goal.description,
+            goal_type: goal.goalType,
+            target_date: goal.targetDate,
+            budget_target_amount: goal.budget?.targetAmount,
+            budget_current_amount: goal.budget?.currentAmount || 0,
+            budget_currency: goal.budget?.currency || '₱',
+            created_at: goal.createdAt
+        })
+
+    if (error) {
+        console.error('Error creating goal:', error)
+        return null
+    }
+
+    if (goal.checklist.length > 0) {
+        await supabase.from('goal_checklist_items').insert(
+            goal.checklist.map(item => ({
+                id: item.id,
+                goal_id: goal.id,
+                text: item.text,
+                completed: item.completed
+            }))
+        )
+    }
+
+    if (goal.comments.length > 0) {
+        await supabase.from('goal_comments').insert(
+            goal.comments.map(c => ({
+                id: c.id,
+                goal_id: goal.id,
+                text: c.text,
+                is_marked_done: c.isMarkedDone,
+                created_at: c.createdAt
+            }))
+        )
+    }
+
+    return goal
+}
+
+export async function updateGoal(goal: Goal): Promise<boolean> {
+    const { error } = await supabase
+        .from('goals')
+        .update({
+            title: goal.title,
+            description: goal.description,
+            goal_type: goal.goalType,
+            target_date: goal.targetDate,
+            budget_target_amount: goal.budget?.targetAmount,
+            budget_current_amount: goal.budget?.currentAmount,
+            budget_currency: goal.budget?.currency
+        })
+        .eq('id', goal.id)
+
+    if (error) {
+        console.error('Error updating goal:', error)
+        return false
+    }
+
+    // Update checklist
+    await supabase.from('goal_checklist_items').delete().eq('goal_id', goal.id)
+    if (goal.checklist.length > 0) {
+        await supabase.from('goal_checklist_items').insert(
+            goal.checklist.map(item => ({
+                id: item.id,
+                goal_id: goal.id,
+                text: item.text,
+                completed: item.completed
+            }))
+        )
+    }
+
+    // Update comments
+    await supabase.from('goal_comments').delete().eq('goal_id', goal.id)
+    if (goal.comments.length > 0) {
+        await supabase.from('goal_comments').insert(
+            goal.comments.map(c => ({
+                id: c.id,
+                goal_id: goal.id,
+                text: c.text,
+                is_marked_done: c.isMarkedDone,
+                created_at: c.createdAt
+            }))
+        )
+    }
+
+    return true
+}
+
+export async function deleteGoal(goalId: string): Promise<boolean> {
+    const { error } = await supabase
+        .from('goals')
+        .delete()
+        .eq('id', goalId)
+
+    if (error) {
+        console.error('Error deleting goal:', error)
+        return false
+    }
+
+    return true
+}
+
+// ============================================
+// REVENUE - CRUD Operations
+// ============================================
+
+export async function fetchRevenues(): Promise<Revenue[]> {
+    const { data, error } = await supabase
+        .from('revenues')
+        .select('*')
+        .order('date_completed', { ascending: false })
+
+    if (error) {
+        console.error('Error fetching revenues:', error)
+        return []
+    }
+
+    return (data || []).map(rev => ({
+        id: rev.id,
+        name: rev.name,
+        description: rev.description,
+        projectName: rev.project_name,
+        price: parseFloat(rev.price),
+        currency: rev.currency,
+        dateCompleted: rev.date_completed,
+        createdAt: rev.created_at
+    }))
+}
+
+export async function createRevenue(revenue: Revenue): Promise<Revenue | null> {
+    const { error } = await supabase
+        .from('revenues')
+        .insert({
+            id: revenue.id,
+            name: revenue.name,
+            description: revenue.description,
+            project_name: revenue.projectName,
+            price: revenue.price,
+            currency: revenue.currency,
+            date_completed: revenue.dateCompleted,
+            created_at: revenue.createdAt
+        })
+
+    if (error) {
+        console.error('Error creating revenue:', error)
+        return null
+    }
+
+    return revenue
+}
+
+export async function updateRevenue(revenue: Revenue): Promise<boolean> {
+    const { error } = await supabase
+        .from('revenues')
+        .update({
+            name: revenue.name,
+            description: revenue.description,
+            project_name: revenue.projectName,
+            price: revenue.price,
+            currency: revenue.currency,
+            date_completed: revenue.dateCompleted
+        })
+        .eq('id', revenue.id)
+
+    if (error) {
+        console.error('Error updating revenue:', error)
+        return false
+    }
+
+    return true
+}
+
+export async function deleteRevenue(revenueId: string): Promise<boolean> {
+    const { error } = await supabase
+        .from('revenues')
+        .delete()
+        .eq('id', revenueId)
+
+    if (error) {
+        console.error('Error deleting revenue:', error)
+        return false
+    }
+
+    return true
+}
