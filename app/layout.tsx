@@ -19,7 +19,7 @@ export const metadata: Metadata = {
   title: "SDaily Planner",
   description: "Your personal productivity companion",
   icons: {
-    icon: "/favicon.png",
+    icon: "/images/New.png",
   },
 };
 
