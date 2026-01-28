@@ -18,6 +18,9 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "SDaily Planner",
   description: "Your personal productivity companion",
+  icons: {
+    icon: "/icon.png",
+  },
 };
 
 export default function RootLayout({
