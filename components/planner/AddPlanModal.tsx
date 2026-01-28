@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from 'react'
 import { useTheme } from '@/components/ThemeProvider'
 import { X, Plus, Trash2, Clock, Link, Paperclip, File } from 'lucide-react'
 import clsx from 'clsx'
-import { PlanFormData, TimeSlot, Attachment } from '@/lib/types'
+import { Plan, PlanFormData, TimeSlot, Attachment } from '@/lib/types'
 import { format } from 'date-fns'
 import { formatTimeTo12h } from '@/lib/utils'
 
@@ -13,9 +13,10 @@ interface AddPlanModalProps {
     onClose: () => void
     onSave: (plan: PlanFormData) => void
     selectedDate: Date
+    planToEdit?: Plan | null
 }
 
-export default function AddPlanModal({ isOpen, onClose, onSave, selectedDate }: AddPlanModalProps) {
+export default function AddPlanModal({ isOpen, onClose, onSave, selectedDate, planToEdit }: AddPlanModalProps) {
     const { theme } = useTheme()
     const isDark = theme === 'dark'
     const fileInputRef = useRef<HTMLInputElement>(null)
@@ -27,6 +28,7 @@ export default function AddPlanModal({ isOpen, onClose, onSave, selectedDate }: 
         timeSlots: [{ id: crypto.randomUUID(), time: '09:00', description: '' }],
         hasDueDate: false,
         dueDate: format(selectedDate, 'yyyy-MM-dd'),
+        includeTime: false,
         attachments: []
     })
 
@@ -34,18 +36,34 @@ export default function AddPlanModal({ isOpen, onClose, onSave, selectedDate }: 
     const [linkInput, setLinkInput] = useState('')
     const [showLinkInput, setShowLinkInput] = useState(false)
 
-    // Reset form when modal opens with new date
+    // Reset form when modal opens
     useEffect(() => {
         if (isOpen) {
-            setFormData({
-                ...getInitialFormData(),
-                date: format(selectedDate, 'yyyy-MM-dd'),
-                dueDate: format(selectedDate, 'yyyy-MM-dd')
-            })
+            if (planToEdit) {
+                // Edit Mode
+                setFormData({
+                    title: planToEdit.title,
+                    description: planToEdit.description || '',
+                    date: planToEdit.date,
+                    timeSlots: planToEdit.timeSlots || [{ id: crypto.randomUUID(), time: '09:00', description: '' }],
+                    hasDueDate: planToEdit.hasDueDate || false,
+                    dueDate: planToEdit.dueDate || planToEdit.date,
+                    includeTime: !!(planToEdit.timeSlots && planToEdit.timeSlots.length > 0),
+                    attachments: planToEdit.attachments || []
+                })
+            } else {
+                // Add Mode
+                setFormData({
+                    ...getInitialFormData(),
+                    date: format(selectedDate, 'yyyy-MM-dd'),
+                    dueDate: format(selectedDate, 'yyyy-MM-dd'),
+                    includeTime: false
+                })
+            }
             setLinkInput('')
             setShowLinkInput(false)
         }
-    }, [isOpen, selectedDate])
+    }, [isOpen, selectedDate, planToEdit])
 
     const handleAddTimeSlot = () => {
         setFormData({
@@ -153,7 +171,7 @@ export default function AddPlanModal({ isOpen, onClose, onSave, selectedDate }: 
                         "text-xl font-bold",
                         isDark ? "text-[#F5F5F5]" : "text-[#2D3436]"
                     )}>
-                        Add Plan
+                        {planToEdit ? 'Edit Plan' : 'Add Plan'}
                     </h2>
                     <button
                         onClick={onClose}
@@ -283,78 +301,104 @@ export default function AddPlanModal({ isOpen, onClose, onSave, selectedDate }: 
                     ) : (
                         // Time Slots
                         <div>
-                            <div className="flex items-center justify-between mb-2">
-                                <label className={clsx(
-                                    "text-sm font-medium",
-                                    isDark ? "text-[#A0A0A0]" : "text-[#636E72]"
-                                )}>
-                                    Time Schedule
-                                </label>
-                                <button
-                                    type="button"
-                                    onClick={handleAddTimeSlot}
-                                    className="flex items-center gap-1 text-sm text-[#FF9F1C] hover:text-[#F68E09] transition-colors"
+                            <div className={clsx(
+                                "flex items-center gap-3 p-3 rounded-xl mb-4",
+                                isDark ? "bg-[#2A2A2A]" : "bg-[#FFF2E0]"
+                            )}>
+                                <input
+                                    type="checkbox"
+                                    id="includeTime"
+                                    checked={formData.includeTime}
+                                    onChange={(e) => setFormData({ ...formData, includeTime: e.target.checked })}
+                                    className="w-5 h-5 rounded accent-[#FF9F1C]"
+                                />
+                                <label
+                                    htmlFor="includeTime"
+                                    className={clsx(
+                                        "text-sm cursor-pointer",
+                                        isDark ? "text-[#F5F5F5]" : "text-[#2D3436]"
+                                    )}
                                 >
-                                    <Plus className="w-4 h-4" />
-                                    Add Time
-                                </button>
+                                    Add specific time schedule
+                                </label>
                             </div>
 
-                            <div className="space-y-3">
-                                {formData.timeSlots.map((slot, index) => (
-                                    <div
-                                        key={slot.id}
-                                        className={clsx(
-                                            "p-3 rounded-xl border space-y-2",
-                                            isDark ? "bg-[#2A2A2A] border-[#3A3A3A]" : "bg-[#FFFBF5] border-[#EFEEEE]"
-                                        )}
-                                    >
-                                        <div className="flex items-center justify-between">
-                                            <div className="flex items-center gap-2">
-                                                <Clock className={clsx("w-4 h-4 flex-shrink-0", isDark ? "text-gray-500" : "text-gray-400")} />
+                            {formData.includeTime && (
+                                <>
+                                    <div className="flex items-center justify-between mb-2">
+                                        <label className={clsx(
+                                            "text-sm font-medium",
+                                            isDark ? "text-[#A0A0A0]" : "text-[#636E72]"
+                                        )}>
+                                            Time Schedule
+                                        </label>
+                                        <button
+                                            type="button"
+                                            onClick={handleAddTimeSlot}
+                                            className="flex items-center gap-1 text-sm text-[#FF9F1C] hover:text-[#F68E09] transition-colors"
+                                        >
+                                            <Plus className="w-4 h-4" />
+                                            Add Time
+                                        </button>
+                                    </div>
+
+                                    <div className="space-y-3">
+                                        {formData.timeSlots.map((slot, index) => (
+                                            <div
+                                                key={slot.id}
+                                                className={clsx(
+                                                    "p-3 rounded-xl border space-y-2",
+                                                    isDark ? "bg-[#2A2A2A] border-[#3A3A3A]" : "bg-[#FFFBF5] border-[#EFEEEE]"
+                                                )}
+                                            >
+                                                <div className="flex items-center justify-between">
+                                                    <div className="flex items-center gap-2">
+                                                        <Clock className={clsx("w-4 h-4 flex-shrink-0", isDark ? "text-gray-500" : "text-gray-400")} />
+                                                        <input
+                                                            type="time"
+                                                            value={slot.time}
+                                                            onChange={(e) => handleTimeSlotChange(slot.id, 'time', e.target.value)}
+                                                            className={clsx(
+                                                                "w-32 px-2 py-1.5 rounded-lg border text-sm focus:outline-none focus:ring-2 focus:ring-[#FF9F1C]",
+                                                                isDark
+                                                                    ? "bg-[#1A1A1A] border-[#3A3A3A] text-[#F5F5F5]"
+                                                                    : "bg-white border-[#EFEEEE] text-[#2D3436]"
+                                                            )}
+                                                        />
+                                                        <span className={clsx(
+                                                            "text-xs font-medium",
+                                                            isDark ? "text-gray-400" : "text-gray-500"
+                                                        )}>
+                                                            ({formatTimeTo12h(slot.time)})
+                                                        </span>
+                                                    </div>
+                                                    {formData.timeSlots.length > 1 && (
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => handleRemoveTimeSlot(slot.id)}
+                                                            className="p-1.5 text-red-500 hover:bg-red-500/10 rounded-lg transition-colors"
+                                                        >
+                                                            <Trash2 className="w-4 h-4" />
+                                                        </button>
+                                                    )}
+                                                </div>
                                                 <input
-                                                    type="time"
-                                                    value={slot.time}
-                                                    onChange={(e) => handleTimeSlotChange(slot.id, 'time', e.target.value)}
+                                                    type="text"
+                                                    value={slot.description}
+                                                    onChange={(e) => handleTimeSlotChange(slot.id, 'description', e.target.value)}
+                                                    placeholder="What's happening at this time?"
                                                     className={clsx(
-                                                        "w-32 px-2 py-1.5 rounded-lg border text-sm focus:outline-none focus:ring-2 focus:ring-[#FF9F1C]",
+                                                        "w-full px-3 py-2 rounded-lg border text-sm focus:outline-none focus:ring-2 focus:ring-[#FF9F1C]",
                                                         isDark
-                                                            ? "bg-[#1A1A1A] border-[#3A3A3A] text-[#F5F5F5]"
-                                                            : "bg-white border-[#EFEEEE] text-[#2D3436]"
+                                                            ? "bg-[#1A1A1A] border-[#3A3A3A] text-[#F5F5F5] placeholder-gray-500"
+                                                            : "bg-white border-[#EFEEEE] text-[#2D3436] placeholder-gray-400"
                                                     )}
                                                 />
-                                                <span className={clsx(
-                                                    "text-xs font-medium",
-                                                    isDark ? "text-gray-400" : "text-gray-500"
-                                                )}>
-                                                    ({formatTimeTo12h(slot.time)})
-                                                </span>
                                             </div>
-                                            {formData.timeSlots.length > 1 && (
-                                                <button
-                                                    type="button"
-                                                    onClick={() => handleRemoveTimeSlot(slot.id)}
-                                                    className="p-1.5 text-red-500 hover:bg-red-500/10 rounded-lg transition-colors"
-                                                >
-                                                    <Trash2 className="w-4 h-4" />
-                                                </button>
-                                            )}
-                                        </div>
-                                        <input
-                                            type="text"
-                                            value={slot.description}
-                                            onChange={(e) => handleTimeSlotChange(slot.id, 'description', e.target.value)}
-                                            placeholder="What's happening at this time?"
-                                            className={clsx(
-                                                "w-full px-3 py-2 rounded-lg border text-sm focus:outline-none focus:ring-2 focus:ring-[#FF9F1C]",
-                                                isDark
-                                                    ? "bg-[#1A1A1A] border-[#3A3A3A] text-[#F5F5F5] placeholder-gray-500"
-                                                    : "bg-white border-[#EFEEEE] text-[#2D3436] placeholder-gray-400"
-                                            )}
-                                        />
+                                        ))}
                                     </div>
-                                ))}
-                            </div>
+                                </>
+                            )}
                         </div>
                     )}
 
@@ -476,7 +520,7 @@ export default function AddPlanModal({ isOpen, onClose, onSave, selectedDate }: 
                         type="submit"
                         className="w-full py-3 rounded-xl bg-gradient-to-r from-[#FF9F1C] to-[#F68E09] text-white font-semibold hover:opacity-90 transition-opacity shadow-md cursor-pointer relative z-10"
                     >
-                        Add Plan
+                        {planToEdit ? 'Save Changes' : 'Add Plan'}
                     </button>
                 </form>
             </div>

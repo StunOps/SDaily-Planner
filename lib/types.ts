@@ -33,6 +33,7 @@ export interface PlanFormData {
     timeSlots: TimeSlot[]
     hasDueDate: boolean
     dueDate: string
+    includeTime: boolean
     attachments: Attachment[]
 }
 

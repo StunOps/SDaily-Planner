@@ -10,7 +10,7 @@ import { Plan, PlanFormData } from '@/lib/types'
 import { fetchPlans, createPlan, updatePlan, deletePlan } from '@/lib/supabaseService'
 import { format } from 'date-fns'
 import clsx from 'clsx'
-import { Plus, Check, Trash2, Clock, X } from 'lucide-react'
+import { Plus, Check, Trash2, Clock, X, Edit } from 'lucide-react'
 import { formatTimeTo12h } from '@/lib/utils'
 
 type CalendarView = 'day' | 'week' | 'month'
@@ -23,10 +23,12 @@ export default function PlannerPage() {
     const [isModalOpen, setIsModalOpen] = useState(false)
     const [selectedDate, setSelectedDate] = useState(new Date())
     const [selectedPlan, setSelectedPlan] = useState<Plan | null>(null)
+    const [planToEdit, setPlanToEdit] = useState<Plan | null>(null)
     const [calendarView, setCalendarView] = useState<CalendarView>('month')
 
     const handleDateClick = (date: Date) => {
         setSelectedDate(date)
+        setPlanToEdit(null)
         setIsModalOpen(true)
     }
 
@@ -35,21 +37,41 @@ export default function PlannerPage() {
     }
 
     const handleSavePlan = async (formData: PlanFormData) => {
-        const newPlan: Plan = {
-            id: crypto.randomUUID(),
-            title: formData.title,
-            description: formData.description || undefined,
-            date: formData.date,
-            timeSlots: formData.hasDueDate ? undefined : formData.timeSlots,
-            hasDueDate: formData.hasDueDate,
-            dueDate: formData.hasDueDate ? formData.dueDate : undefined,
-            attachments: formData.attachments.length > 0 ? formData.attachments : undefined,
-            completed: false,
-            createdAt: new Date().toISOString()
-        }
-        const created = await createPlan(newPlan)
-        if (created) {
-            setPlans([...plans, newPlan])
+        if (planToEdit) {
+            // Update existing plan
+            const updatedPlan: Plan = {
+                ...planToEdit,
+                title: formData.title,
+                description: formData.description || undefined,
+                date: formData.date,
+                timeSlots: (!formData.hasDueDate && formData.includeTime) ? formData.timeSlots : undefined,
+                hasDueDate: formData.hasDueDate,
+                dueDate: formData.hasDueDate ? formData.dueDate : undefined,
+                attachments: formData.attachments.length > 0 ? formData.attachments : undefined,
+            }
+            const success = await updatePlan(updatedPlan)
+            if (success) {
+                setPlans(plans.map(p => p.id === planToEdit.id ? updatedPlan : p))
+            }
+            setPlanToEdit(null)
+        } else {
+            // Create new plan
+            const newPlan: Plan = {
+                id: crypto.randomUUID(),
+                title: formData.title,
+                description: formData.description || undefined,
+                date: formData.date,
+                timeSlots: (!formData.hasDueDate && formData.includeTime) ? formData.timeSlots : undefined,
+                hasDueDate: formData.hasDueDate,
+                dueDate: formData.hasDueDate ? formData.dueDate : undefined,
+                attachments: formData.attachments.length > 0 ? formData.attachments : undefined,
+                completed: false,
+                createdAt: new Date().toISOString()
+            }
+            const created = await createPlan(newPlan)
+            if (created) {
+                setPlans([...plans, newPlan])
+            }
         }
     }
 
@@ -127,6 +149,7 @@ export default function PlannerPage() {
                     <button
                         onClick={() => {
                             setSelectedDate(new Date())
+                            setPlanToEdit(null)
                             setIsModalOpen(true)
                         }}
                         className="flex items-center gap-2 bg-gradient-to-r from-[#FF9F1C] to-[#F68E09] text-white px-4 py-2 rounded-xl hover:opacity-90 transition-opacity shadow-md"
@@ -155,9 +178,13 @@ export default function PlannerPage() {
             {/* Add Plan Modal */}
             <AddPlanModal
                 isOpen={isModalOpen}
-                onClose={() => setIsModalOpen(false)}
+                onClose={() => {
+                    setIsModalOpen(false)
+                    setPlanToEdit(null)
+                }}
                 onSave={handleSavePlan}
                 selectedDate={selectedDate}
+                planToEdit={planToEdit}
             />
 
             {/* Plan Detail Modal */}
@@ -306,8 +333,23 @@ export default function PlannerPage() {
                                 {selectedPlan.completed ? 'Mark Incomplete' : 'Mark Complete'}
                             </button>
                             <button
+                                onClick={() => {
+                                    setPlanToEdit(selectedPlan)
+                                    setSelectedPlan(null)
+                                    setIsModalOpen(true)
+                                }}
+                                className={clsx(
+                                    "px-4 py-2 rounded-xl text-white transition-colors",
+                                    isDark ? "bg-[#2A2A2A] hover:bg-[#3A3A3A] text-gray-200" : "bg-gray-200 hover:bg-gray-300 text-gray-700"
+                                )}
+                                title="Edit Plan"
+                            >
+                                <Edit className="w-5 h-5" />
+                            </button>
+                            <button
                                 onClick={() => handleDeletePlan(selectedPlan.id)}
                                 className="px-4 py-2 rounded-xl bg-red-500 text-white hover:bg-red-600 transition-colors"
+                                title="Delete Plan"
                             >
                                 <Trash2 className="w-5 h-5" />
                             </button>

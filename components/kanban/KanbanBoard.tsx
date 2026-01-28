@@ -3,14 +3,14 @@
 import { useState, useEffect } from 'react'
 import { DragDropContext, Droppable, Draggable, DropResult } from '@hello-pangea/dnd'
 import { KanbanCard, CardStatus, ChecklistItem, Comment, Attachment, Plan, TimeSlot } from '@/lib/types'
-import { fetchCards, createCard, updateCard as updateCardDB, deleteCard as deleteCardDB, fetchPlans, deletePlan, updatePlan } from '@/lib/supabaseService'
+import { fetchCards, createCard, updateCard as updateCardDB, deleteCard as deleteCardDB, fetchPlans, deletePlan, updatePlan, createPlan } from '@/lib/supabaseService'
 import { generateUUID } from '@/lib/uuid'
 import { Plus, X, Calendar, CheckSquare, MessageSquare, Paperclip, Link2, Trash2, Heart, Clock } from 'lucide-react'
 import { useTheme } from '@/components/ThemeProvider'
 import { useData } from '@/lib/DataContext'
 import clsx from 'clsx'
 import { format, isToday, parseISO, isBefore, isAfter, startOfDay } from 'date-fns'
-import { formatTimeTo12h } from '@/lib/utils'
+import { formatTimeTo12h, isOverdue } from '@/lib/utils'
 
 const STORAGE_KEY = 'kanban-cards'
 const PLANNER_STORAGE_KEY = 'planner-plans'
@@ -55,15 +55,16 @@ function determineCardStatus(plan: Plan): CardStatus {
     const startDate = parseISO(plan.date)
     const endDate = plan.hasDueDate && plan.dueDate ? parseISO(plan.dueDate) : startDate
 
+    // OVERDUE: If it's in the past and not completed, keep it "In Progress" so it stays visible
+    if (isOverdue(plan.date, plan.dueDate, plan.completed)) {
+        return 'in-progress'
+    }
+
     if (isToday(startDate) || (startDate <= today && endDate >= today)) {
         return 'in-progress'
     }
 
     if (isAfter(startDate, today) || (plan.hasDueDate && isBefore(today, startDate))) {
-        return 'pending'
-    }
-
-    if (isBefore(endDate, today) && !plan.completed) {
         return 'pending'
     }
 
@@ -74,15 +75,24 @@ export function KanbanBoard() {
     const { theme } = useTheme()
     const isDark = theme === 'dark'
     const [cards, setCards] = useState<KanbanCard[]>([])
-    const { cards: rawCards, plans, isLoading: isDataLoading } = useData() // Use global data
     const [selectedCard, setSelectedCard] = useState<KanbanCard | null>(null)
     const [isModalOpen, setIsModalOpen] = useState(false)
     const [newCardColumn, setNewCardColumn] = useState<CardStatus | null>(null)
     const [newCardTitle, setNewCardTitle] = useState('')
     const [customColumns, setCustomColumns] = useState<KanbanColumn[]>([])
+    const {
+        cards: rawCards,
+        plans,
+        isLoading: isDataLoading,
+        refreshAll,
+        setPlans,
+        setCards: setRawCards
+    } = useData() // Use global data
     const [isAddSectionOpen, setIsAddSectionOpen] = useState(false)
     const [newSectionTitle, setNewSectionTitle] = useState('')
     const [newSectionDescription, setNewSectionDescription] = useState('')
+    const [error, setError] = useState<string | null>(null)
+    const [ignoredPlanIds, setIgnoredPlanIds] = useState<string[]>([]) // To suppress ghost plans during deletion
 
     // Load custom columns
     useEffect(() => {
@@ -124,13 +134,16 @@ export function KanbanBoard() {
     // Remove local isLoading, use derived one if needed, or just rely on data presence
 
     // Sync cards with plans when data changes
+    // Sync cards with plans when data changes
     useEffect(() => {
         if (isDataLoading) return
 
         let kanbanCards = [...rawCards]
 
-        // Sync plans from planner
+        // Sync plans from planner, excluding ignored ones
         plans.forEach(plan => {
+            if (ignoredPlanIds.includes(plan.id)) return
+
             const existingCardIndex = kanbanCards.findIndex(c => c.linkedPlanId === plan.id)
             const newCard = planToCard(plan)
 
@@ -149,51 +162,47 @@ export function KanbanBoard() {
             }
         })
 
-        // Remove cards whose linked plans were deleted
+        // Remove cards whose linked plans were deleted OR are ignored
         kanbanCards = kanbanCards.filter(card => {
             if (card.linkedPlanId) {
+                // If ignored, treat as "missing/deleted" from planner perspective
+                if (ignoredPlanIds.includes(card.linkedPlanId)) return false
                 return plans.some(p => p.id === card.linkedPlanId)
             }
             return true
         })
 
         setCards(kanbanCards)
-    }, [rawCards, plans, isDataLoading])
+    }, [rawCards, plans, isDataLoading, ignoredPlanIds]) // Add ignoredPlanIds to dependency
 
-    // Sync card changes back to planner
-    const syncCardToPlanner = (card: KanbanCard) => {
+    // Sync card changes back to planner (Supabase)
+    const syncCardToPlanner = async (card: KanbanCard) => {
         if (!card.linkedPlanId) return
 
-        const savedPlans = localStorage.getItem(PLANNER_STORAGE_KEY)
-        if (!savedPlans) return
+        const planUpdate: Partial<Plan> = {
+            id: card.linkedPlanId,
+            title: card.title,
+            description: card.description || '',
+            date: card.startDate || new Date().toISOString(),
+            dueDate: card.endDate,
+            hasDueDate: !!(card.startDate && card.endDate && card.startDate !== card.endDate),
+            attachments: card.attachments,
+            completed: card.status === 'completed',
+        }
 
-        const plans: Plan[] = JSON.parse(savedPlans)
-        const planIndex = plans.findIndex(p => p.id === card.linkedPlanId)
-
-        if (planIndex >= 0) {
-            plans[planIndex] = {
-                ...plans[planIndex],
-                title: card.title,
-                description: card.description,
-                date: card.startDate || plans[planIndex].date,
-                dueDate: card.endDate,
-                hasDueDate: !!(card.startDate && card.endDate && card.startDate !== card.endDate),
-                attachments: card.attachments,
-                completed: card.status === 'completed',
-            }
-            localStorage.setItem(PLANNER_STORAGE_KEY, JSON.stringify(plans))
+        try {
+            await updatePlan(planUpdate as Plan)
+        } catch (error) {
+            console.error('Failed to sync card to planner:', error)
         }
     }
 
     // Create plan in planner when card gets dates
-    const createPlanFromCard = (card: KanbanCard) => {
+    const createPlanFromCard = async (card: KanbanCard) => {
         if (!card.startDate || card.linkedPlanId) return
 
-        const savedPlans = localStorage.getItem(PLANNER_STORAGE_KEY)
-        const plans: Plan[] = savedPlans ? JSON.parse(savedPlans) : []
-
         const newPlan: Plan = {
-            id: crypto.randomUUID(),
+            id: generateUUID(),
             title: card.title,
             description: card.description,
             date: card.startDate,
@@ -204,10 +213,8 @@ export function KanbanBoard() {
             createdAt: card.createdAt,
         }
 
-        plans.push(newPlan)
-        localStorage.setItem(PLANNER_STORAGE_KEY, JSON.stringify(plans))
-
-        return newPlan.id
+        const created = await createPlan(newPlan)
+        return created ? created.id : null
     }
 
     const handleDragEnd = (result: DropResult) => {
@@ -293,46 +300,135 @@ export function KanbanBoard() {
     }
 
     const updateCard = async (updatedCard: KanbanCard) => {
-        // Auto-categorize based on dates
-        let finalCard = updatedCard
+        let finalCard = { ...updatedCard }
 
-        if (updatedCard.startDate && updatedCard.status !== 'completed') {
-            const today = startOfDay(new Date())
-            const startDate = parseISO(updatedCard.startDate)
-            const endDate = updatedCard.endDate ? parseISO(updatedCard.endDate) : startDate
+        // 1. Handle Date Clearing Case (Atomic)
+        if (!updatedCard.startDate) {
+            finalCard.status = 'inbox'
 
-            if (isToday(startDate) || (startDate <= today && endDate >= today)) {
-                finalCard = { ...updatedCard, status: 'in-progress' }
-            } else if (isAfter(startDate, today)) {
-                finalCard = { ...updatedCard, status: 'pending' }
+            // Special Case: If this was a virtual plan card (starts with 'plan-'), 
+            // we must CREATE a real card to persist it, because the plan (its source) is about to be deleted.
+            if (updatedCard.id.startsWith('plan-')) {
+                try {
+                    const newCardId = generateUUID()
+                    const realCard: KanbanCard = {
+                        ...finalCard,
+                        id: newCardId,
+                        linkedPlanId: undefined, // Fully unlink
+                        status: 'inbox',
+                        createdAt: new Date().toISOString()
+                    }
+
+                    // 1. Create real persistent card
+                    const created = await createCard(realCard)
+                    if (!created) throw new Error("Failed to persist card during unschedule")
+
+                    // 2. Delete the old plan
+                    if (selectedCard?.linkedPlanId) {
+                        const planIdToDelete = selectedCard.linkedPlanId
+                        // Immediate suppress to prevent ghost
+                        setIgnoredPlanIds(prev => [...prev, planIdToDelete])
+                        await deletePlan(planIdToDelete)
+                    }
+
+                    // 3. Optimistic Update: Replace the virtual card with the new real one
+                    setRawCards(prev => [...prev.filter(c => c.id !== updatedCard.id), realCard])
+                    setPlans(prev => prev.filter(p => p.id !== selectedCard?.linkedPlanId))
+
+                    // 4. Cleanup
+                    // Do NOT await refreshAll() here. It causes a race condition where the plan 
+                    // is re-fetched before the DB deletion propagates, causing a duplicate card.
+                    // Trust the optimistic update and let Realtime subscription handle eventual consistency.
+
+                    setIsModalOpen(false)
+                    setSelectedCard(null)
+                    return // Stop further processing
+                } catch (err) {
+                    console.error("Failed to migrate virtual card:", err)
+                    setError("Failed to unschedule card. Please try again.")
+                    return
+                }
+            }
+
+            // Normal Case: It's already a real card, just delete the link
+            if (selectedCard?.linkedPlanId) {
+                try {
+                    await deletePlan(selectedCard.linkedPlanId)
+                    finalCard.linkedPlanId = undefined
+                } catch (err) {
+                    console.error("Failed to delete linked plan during clear:", err)
+                }
+            }
+        }
+        // 2. Handle Plan Sync/Creation Case
+        else if (finalCard.startDate) {
+            // Auto-categorize based on dates if not completed
+            if (finalCard.status !== 'completed') {
+                const today = startOfDay(new Date())
+                const startDate = parseISO(finalCard.startDate)
+                const endDate = finalCard.endDate ? parseISO(finalCard.endDate) : startDate
+
+                if (isToday(startDate) || (startDate <= today && endDate >= today)) {
+                    finalCard.status = 'in-progress'
+                } else if (isOverdue(finalCard.startDate, finalCard.endDate, false)) {
+                    finalCard.status = 'in-progress'
+                } else if (isAfter(startDate, today)) {
+                    finalCard.status = 'pending'
+                }
+            }
+
+            // Create or update plan
+            if (!finalCard.linkedPlanId) {
+                const planId = await createPlanFromCard(finalCard)
+                if (planId) finalCard.linkedPlanId = planId
+            } else {
+                await syncCardToPlanner(finalCard)
             }
         }
 
-        // Create plan if card has dates but no linked plan
-        if (finalCard.startDate && !finalCard.linkedPlanId) {
-            const planId = createPlanFromCard(finalCard)
-            if (planId) {
-                finalCard = { ...finalCard, linkedPlanId: planId }
-            }
-        } else {
-            syncCardToPlanner(finalCard)
+        // 3. Optimistic Local Update to prevent race condition in useEffect
+        if (!finalCard.startDate && selectedCard?.linkedPlanId) {
+            setPlans(prev => prev.filter(p => p.id !== selectedCard.linkedPlanId))
         }
+        setRawCards(prev => prev.map(c => c.id === finalCard.id ? finalCard : c))
 
-        await updateCardDB(finalCard)
-        setCards(prev => prev.map(c => c.id === finalCard.id ? finalCard : c))
-        setSelectedCard(finalCard)
+        // 4. Persist to Database
+        try {
+            const success = await updateCardDB(finalCard)
+            if (!success) throw new Error("Could not update card in database.")
+
+            // 5. Force Refreshes and Close
+            await refreshAll()
+            setIsModalOpen(false)
+            setSelectedCard(null)
+        } catch (err: any) {
+            setError(err.message || "An unexpected error occurred while updating the card.")
+        }
     }
 
     const deleteCard = async (cardId: string) => {
+        // Find card in the combined list (including virtual ones), not just raw DB cards
         const card = cards.find(c => c.id === cardId)
 
-        // Also delete from planner if linked
+        // Optimistic update
+        setRawCards(prev => prev.filter(c => c.id !== cardId)) // Won't hurt if not in rawCards
+        if (card?.linkedPlanId) {
+            setPlans(prev => prev.filter(p => p.id !== card.linkedPlanId))
+            // Also add to ignore list to prevent ghosts
+            setIgnoredPlanIds(prev => [...prev, card.linkedPlanId!])
+        }
+
+        // Background persistence
         if (card?.linkedPlanId) {
             await deletePlan(card.linkedPlanId)
         }
 
-        await deleteCardDB(cardId)
-        setCards(prev => prev.filter(c => c.id !== cardId))
+        // Only delete from DB if it's a real card (not virtual plan-card)
+        if (!cardId.startsWith('plan-')) {
+            await deleteCardDB(cardId)
+        }
+
+        await refreshAll()
         setIsModalOpen(false)
         setSelectedCard(null)
     }
@@ -426,7 +522,12 @@ export function KanbanBoard() {
                                                                         ? "bg-[#2A2A2A] border-[#3A3A3A] hover:border-[#FF9F1C]"
                                                                         : "bg-white border-gray-200 hover:border-[#FF9F1C]",
                                                                     snapshot.isDragging && "shadow-lg rotate-2",
-                                                                    card.linkedPlanId && (isDark ? "border-l-2 border-l-[#FF9F1C]" : "border-l-2 border-l-[#FF9F1C]")
+                                                                    card.linkedPlanId && (isDark ? "border-l-2 border-l-[#FF9F1C]" : "border-l-2 border-l-[#FF9F1C]"),
+                                                                    isOverdue(card.startDate, card.endDate, card.status === 'completed') && (
+                                                                        isDark
+                                                                            ? "border-red-500/50 bg-red-500/10 hover:border-red-500"
+                                                                            : "border-red-200 bg-red-50 hover:border-red-400"
+                                                                    )
                                                                 )}
                                                             >
                                                                 <div className="flex items-start justify-between">
@@ -630,10 +731,13 @@ export function KanbanBoard() {
                                                                 onClick={() => openCard(card)}
                                                                 className={clsx(
                                                                     "group p-3 rounded-xl cursor-pointer transition-all border",
-                                                                    isDark
-                                                                        ? "bg-[#2A2A2A] border-[#3A3A3A] hover:border-[#FF9F1C]"
-                                                                        : "bg-white border-gray-200 hover:border-[#FF9F1C]",
-                                                                    snapshot.isDragging && "shadow-lg rotate-2",
+                                                                    isOverdue(card.startDate, card.endDate, card.status === 'completed')
+                                                                        ? (isDark
+                                                                            ? "bg-red-500/10 border-red-500/50 hover:border-red-500"
+                                                                            : "bg-red-100 border-red-400 hover:border-red-500")
+                                                                        : (isDark
+                                                                            ? "bg-[#2A2A2A] border-[#3A3A3A] hover:border-[#FF9F1C]"
+                                                                            : "bg-white border-gray-200 hover:border-[#FF9F1C]"),
                                                                     card.linkedPlanId && (isDark ? "border-l-2 border-l-[#FF9F1C]" : "border-l-2 border-l-[#FF9F1C]")
                                                                 )}
                                                             >
@@ -657,7 +761,9 @@ export function KanbanBoard() {
                                                                     {card.endDate && (
                                                                         <span className={clsx(
                                                                             "text-xs px-2 py-0.5 rounded flex items-center gap-1",
-                                                                            isDark ? "bg-[#FF9F1C]/20 text-[#FF9F1C]" : "bg-[#FFF2E0] text-[#CC7A00]"
+                                                                            isOverdue(card.startDate, card.endDate, card.status === 'completed')
+                                                                                ? (isDark ? "bg-red-900/40 text-red-400" : "bg-red-200 text-red-700")
+                                                                                : (isDark ? "bg-[#FF9F1C]/20 text-[#FF9F1C]" : "bg-[#FFF2E0] text-[#CC7A00]")
                                                                         )}>
                                                                             <Calendar className="w-3 h-3" />
                                                                             {format(new Date(card.endDate), 'MMM d')}
@@ -820,6 +926,41 @@ export function KanbanBoard() {
                     isDark={isDark}
                 />
             )}
+            {/* Error Modal */}
+            {error && (
+                <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-in fade-in duration-200">
+                    <div className={clsx(
+                        "w-full max-w-sm rounded-2xl shadow-2xl p-6 border-2 animate-in zoom-in duration-300",
+                        isDark ? "bg-[#1A1A1A] border-red-500/30" : "bg-white border-red-100"
+                    )}>
+                        <div className="flex flex-col items-center text-center space-y-4">
+                            <div className="w-12 h-12 bg-red-500/10 rounded-full flex items-center justify-center">
+                                <X className="w-6 h-6 text-red-500" />
+                            </div>
+                            <div className="space-y-2">
+                                <h3 className={clsx(
+                                    "text-lg font-bold",
+                                    isDark ? "text-white" : "text-[#2D3436]"
+                                )}>
+                                    Something went wrong
+                                </h3>
+                                <p className={clsx(
+                                    "text-sm",
+                                    isDark ? "text-gray-400" : "text-gray-500"
+                                )}>
+                                    {error}
+                                </p>
+                            </div>
+                            <button
+                                onClick={() => setError(null)}
+                                className="w-full py-2.5 bg-red-500 hover:bg-red-600 text-white rounded-xl text-sm font-bold transition-all"
+                            >
+                                Dismiss
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     )
 }
@@ -845,18 +986,54 @@ function CardModal({ card, onClose, onUpdate, onDelete, isDark }: CardModalProps
     const [newComment, setNewComment] = useState('')
     const [newLinkName, setNewLinkName] = useState('')
     const [newLinkUrl, setNewLinkUrl] = useState('')
+    const [isSubmitting, setIsSubmitting] = useState(false)
 
-    const handleSave = () => {
-        onUpdate({
-            ...card,
-            title,
-            description,
-            startDate: startDate || undefined,
-            endDate: endDate || undefined,
-            checklist,
-            comments,
-            attachments,
-        })
+    const handleSave = async () => {
+        if (isSubmitting) return
+        setIsSubmitting(true)
+        try {
+            await onUpdate({
+                ...card,
+                title,
+                description,
+                startDate: startDate || undefined,
+                endDate: endDate || undefined,
+                checklist,
+                comments,
+                attachments,
+            })
+        } catch (error) {
+            setIsSubmitting(false)
+        }
+    }
+
+    const handleClearDates = async () => {
+        if (isSubmitting) return
+        setIsSubmitting(true)
+
+        // 1. Clear UI states immediately
+        setStartDate('')
+        setEndDate('')
+
+        // 2. Trigger atomic update: clear dates, remove link, move to inbox
+        try {
+            await onUpdate({
+                ...card,
+                title,
+                description,
+                startDate: undefined,
+                endDate: undefined,
+                status: 'inbox',
+                linkedPlanId: card.linkedPlanId, // Parent uses this to know what to delete
+                checklist,
+                comments,
+                attachments,
+            })
+        } catch (error) {
+            setIsSubmitting(false)
+        }
+
+        // Modal will be closed by onUpdate/updateCard
     }
 
     const addChecklistItem = () => {
@@ -989,47 +1166,73 @@ function CardModal({ card, onClose, onUpdate, onDelete, isDark }: CardModalProps
                         />
                     </div>
 
-                    {/* Dates */}
-                    <div className="grid grid-cols-2 gap-4 mb-4">
-                        <div>
-                            <label className={clsx(
-                                "text-sm font-medium flex items-center gap-1",
-                                isDark ? "text-[#A0A0A0]" : "text-gray-600"
-                            )}>
-                                <Calendar className="w-4 h-4" /> Start Date
-                            </label>
-                            <input
-                                type="date"
-                                value={startDate}
-                                onChange={(e) => setStartDate(e.target.value)}
-                                className={clsx(
-                                    "w-full mt-1 p-2 rounded-lg border outline-none",
-                                    isDark
-                                        ? "bg-[#2A2A2A] border-[#3A3A3A] text-[#F5F5F5]"
-                                        : "bg-gray-50 border-gray-200 text-[#2D3436]"
-                                )}
-                            />
-                        </div>
-                        <div>
-                            <label className={clsx(
-                                "text-sm font-medium flex items-center gap-1",
-                                isDark ? "text-[#A0A0A0]" : "text-gray-600"
-                            )}>
-                                <Calendar className="w-4 h-4" /> End Date
-                            </label>
-                            <input
-                                type="date"
-                                value={endDate}
-                                onChange={(e) => setEndDate(e.target.value)}
-                                className={clsx(
-                                    "w-full mt-1 p-2 rounded-lg border outline-none",
-                                    isDark
-                                        ? "bg-[#2A2A2A] border-[#3A3A3A] text-[#F5F5F5]"
-                                        : "bg-gray-50 border-gray-200 text-[#2D3436]"
-                                )}
-                            />
-                        </div>
+                    {/* Scheduled Toggle */}
+                    <div className="flex items-center gap-2 mb-4">
+                        <input
+                            type="checkbox"
+                            id="is-scheduled-checkbox"
+                            checked={!!startDate}
+                            onChange={(e) => {
+                                if (!e.target.checked) {
+                                    handleClearDates()
+                                } else {
+                                    // Default to today when enabling
+                                    setStartDate(new Date().toISOString().split('T')[0])
+                                }
+                            }}
+                            className="w-4 h-4 rounded border-gray-300 text-[#FF9F1C] focus:ring-[#FF9F1C]"
+                        />
+                        <label htmlFor="is-scheduled-checkbox" className={clsx(
+                            "text-sm font-bold",
+                            isDark ? "text-white" : "text-[#2D3436]"
+                        )}>
+                            Schedule this task
+                        </label>
                     </div>
+
+                    {/* Dates Section - Only visible if scheduled */}
+                    {startDate && (
+                        <div className="grid grid-cols-2 gap-4 mb-4 animate-in fade-in slide-in-from-top-2 duration-200">
+                            <div className="relative group/date">
+                                <label className={clsx(
+                                    "text-sm font-medium flex items-center justify-between",
+                                    isDark ? "text-[#A0A0A0]" : "text-gray-600"
+                                )}>
+                                    <span className="flex items-center gap-1"><Calendar className="w-4 h-4" /> Start Date</span>
+                                </label>
+                                <input
+                                    type="date"
+                                    value={startDate}
+                                    onChange={(e) => setStartDate(e.target.value)}
+                                    className={clsx(
+                                        "w-full mt-1 p-2 rounded-lg border outline-none",
+                                        isDark
+                                            ? "bg-[#2A2A2A] border-[#3A3A3A] text-[#F5F5F5]"
+                                            : "bg-gray-50 border-gray-200 text-[#2D3436]"
+                                    )}
+                                />
+                            </div>
+                            <div>
+                                <label className={clsx(
+                                    "text-sm font-medium flex items-center gap-1",
+                                    isDark ? "text-[#A0A0A0]" : "text-gray-600"
+                                )}>
+                                    <Calendar className="w-4 h-4" /> End Date
+                                </label>
+                                <input
+                                    type="date"
+                                    value={endDate}
+                                    onChange={(e) => setEndDate(e.target.value)}
+                                    className={clsx(
+                                        "w-full mt-1 p-2 rounded-lg border outline-none",
+                                        isDark
+                                            ? "bg-[#2A2A2A] border-[#3A3A3A] text-[#F5F5F5]"
+                                            : "bg-gray-50 border-gray-200 text-[#2D3436]"
+                                    )}
+                                />
+                            </div>
+                        </div>
+                    )}
 
                     {/* Checklist Section */}
                     <div className="mb-4">
@@ -1334,6 +1537,8 @@ function CardModal({ card, onClose, onUpdate, onDelete, isDark }: CardModalProps
                     </div>
                 </div>
             </div>
+
+            {/* Custom Confirmation Popup Removed */}
         </div>
     )
 }

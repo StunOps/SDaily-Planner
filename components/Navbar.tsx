@@ -13,6 +13,7 @@ import {
     Moon
 } from 'lucide-react'
 import clsx from 'clsx'
+import { format } from 'date-fns'
 
 const navItems = [
     { name: 'Overview', href: '/', icon: LayoutDashboard },
@@ -26,6 +27,8 @@ export default function Navbar() {
     const pathname = usePathname()
     const { theme, toggleTheme } = useTheme()
     const isDark = theme === 'dark'
+    const today = new Date()
+    const dateStr = format(today, 'EEEE, MMM d')
 
     return (
         <header
@@ -100,6 +103,25 @@ export default function Navbar() {
                             <Moon className="w-5 h-5 text-gray-500" />
                         )}
                     </button>
+
+                    {/* Date Display */}
+                    <div className={clsx(
+                        "hidden lg:flex flex-col text-right pr-4 border-r",
+                        isDark ? "border-[#2A2A2A]" : "border-[#EFEEEE]"
+                    )}>
+                        <p className={clsx(
+                            "text-xs font-medium",
+                            isDark ? "text-gray-500" : "text-gray-400"
+                        )}>
+                            Today
+                        </p>
+                        <p className={clsx(
+                            "text-sm font-semibold",
+                            isDark ? "text-[#F5F5F5]" : "text-[#2D3436]"
+                        )}>
+                            {dateStr}
+                        </p>
+                    </div>
 
                     {/* Profile */}
                     <div className="flex items-center gap-3">
