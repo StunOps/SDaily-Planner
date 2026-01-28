@@ -14,6 +14,7 @@ interface DataContextType {
     // Loading state
     isLoading: boolean
     isInitialized: boolean
+    isDataLoading: boolean
 
     // Setters for optimistic updates
     setPlans: (plans: Plan[] | ((prev: Plan[]) => Plan[])) => void
@@ -91,41 +92,29 @@ export function DataProvider({ children }: { children: ReactNode }) {
             // Plans subscription
             supabase
                 .channel('plans-changes')
-                .on(
-                    'postgres_changes',
-                    { event: '*', schema: 'public', table: 'plans' },
-                    () => refreshPlans(true)
-                )
+                .on('postgres_changes', { event: '*', schema: 'public', table: 'plans' }, () => refreshPlans(true))
+                .on('postgres_changes', { event: '*', schema: 'public', table: 'plan_attachments' }, () => refreshPlans(true))
                 .subscribe(),
 
             // Cards subscription
             supabase
                 .channel('cards-changes')
-                .on(
-                    'postgres_changes',
-                    { event: '*', schema: 'public', table: 'kanban_cards' },
-                    () => refreshCards(true)
-                )
+                .on('postgres_changes', { event: '*', schema: 'public', table: 'kanban_cards' }, () => refreshCards(true))
+                .on('postgres_changes', { event: '*', schema: 'public', table: 'card_attachments' }, () => refreshCards(true))
+                .on('postgres_changes', { event: '*', schema: 'public', table: 'card_checklist_items' }, () => refreshCards(true))
+                .on('postgres_changes', { event: '*', schema: 'public', table: 'card_comments' }, () => refreshCards(true))
                 .subscribe(),
 
             // Goals subscription
             supabase
                 .channel('goals-changes')
-                .on(
-                    'postgres_changes',
-                    { event: '*', schema: 'public', table: 'goals' },
-                    () => refreshGoals(true)
-                )
+                .on('postgres_changes', { event: '*', schema: 'public', table: 'goals' }, () => refreshGoals(true))
                 .subscribe(),
 
             // Revenues subscription
             supabase
                 .channel('revenues-changes')
-                .on(
-                    'postgres_changes',
-                    { event: '*', schema: 'public', table: 'revenues' },
-                    () => refreshRevenues(true)
-                )
+                .on('postgres_changes', { event: '*', schema: 'public', table: 'revenues' }, () => refreshRevenues(true))
                 .subscribe(),
         ]
 
@@ -151,6 +140,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
             revenues,
             isLoading,
             isInitialized,
+            isDataLoading: isLoading,
             setPlans,
             setCards,
             setGoals,

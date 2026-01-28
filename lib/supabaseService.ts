@@ -8,6 +8,8 @@ import { Plan, KanbanCard, Goal, Revenue, TimeSlot, Attachment, ChecklistItem, C
 // PLANS - CRUD Operations
 // ============================================
 
+import { generateUUID } from './uuid'
+
 export async function fetchPlans(): Promise<Plan[]> {
     const { data: plans, error } = await supabase
         .from('plans')
@@ -160,6 +162,20 @@ export async function updatePlan(plan: Plan): Promise<boolean> {
     if (error) {
         console.error('Error updating plan:', error)
         return false
+    }
+
+    // Update attachments
+    await supabase.from('plan_attachments').delete().eq('plan_id', plan.id)
+    if (plan.attachments && plan.attachments.length > 0) {
+        await supabase.from('plan_attachments').insert(
+            plan.attachments.map(att => ({
+                id: att.id,
+                plan_id: plan.id,
+                type: att.type,
+                name: att.name,
+                url: att.url
+            }))
+        )
     }
 
     return true
@@ -359,8 +375,100 @@ export async function createCard(card: KanbanCard): Promise<KanbanCard | null> {
 export async function updateCard(card: KanbanCard): Promise<boolean> {
     // If this is a virtual plan card (id starts with 'plan-'), do not update to kanban_cards table
     // It should be handled by updatePlan instead
+    // If this is a virtual plan card (id starts with 'plan-'), handle it via updatePlan
     if (card.id.startsWith('plan-')) {
-        return true // Pretend success, but do nothing in this table
+        const planId = card.id.replace('plan-', '')
+        // We need to fetch the existing plan to preserve other fields, or construct partial
+        // For now, we construct a Plan object with the available info
+        const planUpdate: Plan = {
+            id: planId,
+            title: card.title,
+            description: card.description,
+            date: card.startDate || new Date().toISOString().split('T')[0], // Fallback if missing
+            hasDueDate: !!card.endDate,
+            dueDate: card.endDate,
+            completed: card.status === 'completed',
+            createdAt: card.createdAt,
+            // Attachments are key here
+            attachments: card.attachments,
+            // Checklist/Comments are NOT supported on Plans yet, so they will be lost/ignored
+            // timeSlots are read-only on cards usually, but passing them back just in case
+            timeSlots: card.timeSlots
+        }
+
+        // 1. Update the underlying Plan (title, date, attachments)
+        const planUpdated = await updatePlan(planUpdate)
+        if (!planUpdated) return false
+
+        // 2. Handle Checklist & Comments (Promote to Real Card if needed)
+        // Check if a real card already exists for this plan
+        const { data: existingCard } = await supabase
+            .from('kanban_cards')
+            .select('id')
+            .eq('linked_plan_id', planId)
+            .single()
+
+        let realCardId = existingCard?.id
+
+        if (realCardId) {
+            // Real card exists, update it with these comments/checklist
+            // We recursively call updateCard with the REAL ID
+            // IMPORTANT: We pass attachments: [] to avoid duplicating them in card_attachments
+            // (Synced cards rely on plan_attachments, so we clear card_attachments to avoid confusion)
+            return await updateCard({
+                ...card,
+                id: realCardId,
+                attachments: []
+            })
+        } else if (card.checklist.length > 0 || card.comments.length > 0) {
+            // No real card exists, but we have data to save, so CREATE one
+            const newCardId = generateUUID()
+            const { error: createError } = await supabase
+                .from('kanban_cards')
+                .insert({
+                    id: newCardId,
+                    title: card.title,
+                    description: card.description || null,
+                    status: card.status,
+                    start_date: card.startDate || null,
+                    end_date: card.endDate || null,
+                    linked_plan_id: planId,
+                    created_at: new Date().toISOString()
+                })
+
+            if (createError) {
+                console.error('Error creating linked card for metadata:', createError)
+                return false
+            }
+
+            // Now insert the checklist/comments for this new card
+            if (card.checklist.length > 0) {
+                await supabase.from('card_checklist_items').insert(
+                    card.checklist.map(item => ({
+                        id: item.id,
+                        card_id: newCardId,
+                        text: item.text,
+                        completed: item.completed
+                    }))
+                )
+            }
+
+            if (card.comments.length > 0) {
+                await supabase.from('card_comments').insert(
+                    card.comments.map(c => ({
+                        id: c.id,
+                        card_id: newCardId,
+                        text: c.text,
+                        is_marked_done: c.isMarkedDone,
+                        created_at: c.createdAt
+                    }))
+                )
+            }
+
+            // Note: We do NOT insert attachments here because they are already on the Plan
+        }
+
+        return true
     }
 
     // Sanitize data for Supabase (convert undefined to null)

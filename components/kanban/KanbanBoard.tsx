@@ -1,11 +1,11 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { DragDropContext, Droppable, Draggable, DropResult } from '@hello-pangea/dnd'
 import { KanbanCard, CardStatus, ChecklistItem, Comment, Attachment, Plan, TimeSlot } from '@/lib/types'
 import { fetchCards, createCard, updateCard as updateCardDB, deleteCard as deleteCardDB, fetchPlans, deletePlan, updatePlan, createPlan } from '@/lib/supabaseService'
 import { generateUUID } from '@/lib/uuid'
-import { Plus, X, Calendar, CheckSquare, MessageSquare, Paperclip, Link2, Trash2, Heart, Clock } from 'lucide-react'
+import { Plus, X, Calendar, CheckSquare, MessageSquare, Paperclip, Link2, Trash2, Heart, Clock, FileText, Download, Eye, Image as ImageIcon, Upload, AlignLeft } from 'lucide-react'
 import { useTheme } from '@/components/ThemeProvider'
 import { useData } from '@/lib/DataContext'
 import clsx from 'clsx'
@@ -584,6 +584,31 @@ export function KanbanBoard() {
                                                                             {card.checklist.filter(c => c.completed).length}/{card.checklist.length}
                                                                         </span>
                                                                     )}
+                                                                    {card.description && (
+                                                                        <span className={clsx(
+                                                                            "text-xs p-1 rounded flex items-center gap-1",
+                                                                            isDark ? "text-gray-400 hover:bg-gray-700/50" : "text-gray-400 hover:bg-gray-100"
+                                                                        )}>
+                                                                            <AlignLeft className="w-3.5 h-3.5" />
+                                                                        </span>
+                                                                    )}
+                                                                    {card.comments.length > 0 && (
+                                                                        <span className={clsx(
+                                                                            "text-xs p-1 rounded flex items-center gap-1",
+                                                                            isDark ? "text-gray-400 hover:bg-gray-700/50" : "text-gray-400 hover:bg-gray-100"
+                                                                        )}>
+                                                                            <MessageSquare className="w-3.5 h-3.5" />
+                                                                            {/* No count label */}
+                                                                        </span>
+                                                                    )}
+                                                                    {card.attachments.length > 0 && (
+                                                                        <span className={clsx(
+                                                                            "text-xs p-1 rounded flex items-center gap-1",
+                                                                            isDark ? "text-gray-400 hover:bg-gray-700/50" : "text-gray-400 hover:bg-gray-100"
+                                                                        )}>
+                                                                            <Paperclip className="w-3.5 h-3.5" />
+                                                                        </span>
+                                                                    )}
                                                                 </div>
                                                             </div>
                                                         )}
@@ -1076,6 +1101,10 @@ function CardModal({ card, onClose, onUpdate, onDelete, isDark }: CardModalProps
         ))
     }
 
+    const deleteComment = (id: string) => {
+        setComments(comments.filter(c => c.id !== id))
+    }
+
     const addLink = () => {
         if (!newLinkName.trim() || !newLinkUrl.trim()) return
         setAttachments([...attachments, {
@@ -1090,6 +1119,35 @@ function CardModal({ card, onClose, onUpdate, onDelete, isDark }: CardModalProps
 
     const deleteAttachment = (id: string) => {
         setAttachments(attachments.filter(a => a.id !== id))
+    }
+
+    // File Upload Logic
+    const fileInputRef = useRef<HTMLInputElement>(null)
+    const [previewAttachment, setPreviewAttachment] = useState<Attachment | null>(null)
+
+    const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0]
+        if (!file) return
+
+        const reader = new FileReader()
+        reader.onloadend = () => {
+            const base64String = reader.result as string
+            setAttachments([...attachments, {
+                id: generateUUID(),
+                type: 'file',
+                name: file.name,
+                url: base64String
+            }])
+        }
+        reader.readAsDataURL(file)
+    }
+
+    const handleAttachmentClick = (attachment: Attachment) => {
+        if (attachment.type === 'file') {
+            setPreviewAttachment(attachment)
+        } else {
+            window.open(attachment.url, '_blank')
+        }
     }
 
     const checklistProgress = checklist.length > 0
@@ -1159,9 +1217,9 @@ function CardModal({ card, onClose, onUpdate, onDelete, isDark }: CardModalProps
                             value={description}
                             onChange={(e) => setDescription(e.target.value)}
                             placeholder="Add a more detailed description..."
-                            rows={3}
+                            rows={8}
                             className={clsx(
-                                "w-full mt-1 p-3 rounded-lg border outline-none resize-none",
+                                "w-full mt-1 p-3 rounded-lg border outline-none resize-none min-h-[120px]",
                                 isDark
                                     ? "bg-[#2A2A2A] border-[#3A3A3A] text-[#F5F5F5] placeholder-gray-500"
                                     : "bg-gray-50 border-gray-200 text-[#2D3436]"
@@ -1321,12 +1379,34 @@ function CardModal({ card, onClose, onUpdate, onDelete, isDark }: CardModalProps
 
                     {/* Attachments Section */}
                     <div className="mb-4">
-                        <div className="flex items-center gap-2 mb-2">
-                            <Paperclip className="w-4 h-4 text-blue-500" />
-                            <span className={clsx(
-                                "text-sm font-medium",
-                                isDark ? "text-[#F5F5F5]" : "text-[#2D3436]"
-                            )}>Attachments</span>
+                        <div className="flex items-center justify-between mb-2">
+                            <div className="flex items-center gap-2">
+                                <Paperclip className="w-4 h-4 text-blue-500" />
+                                <span className={clsx(
+                                    "text-sm font-medium",
+                                    isDark ? "text-[#F5F5F5]" : "text-[#2D3436]"
+                                )}>Attachments</span>
+                            </div>
+                            <div className="flex gap-2">
+                                <input
+                                    type="file"
+                                    ref={fileInputRef}
+                                    className="hidden"
+                                    onChange={handleFileUpload}
+                                />
+                                <button
+                                    onClick={() => fileInputRef.current?.click()}
+                                    className={clsx(
+                                        "p-1.5 rounded-lg flex items-center gap-1 text-xs font-medium transition-colors",
+                                        isDark
+                                            ? "bg-[#2A2A2A] text-[#F5F5F5] hover:bg-[#3A3A3A]"
+                                            : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+                                    )}
+                                >
+                                    <Upload className="w-3 h-3" />
+                                    Upload File
+                                </button>
+                            </div>
                         </div>
 
                         <div className="space-y-2 mb-2">
@@ -1338,24 +1418,49 @@ function CardModal({ card, onClose, onUpdate, onDelete, isDark }: CardModalProps
                                         isDark ? "bg-[#2A2A2A]" : "bg-gray-50"
                                     )}
                                 >
-                                    <a
-                                        href={attachment.url}
-                                        target="_blank"
-                                        rel="noopener noreferrer"
-                                        className="flex items-center gap-2 text-sm text-[#FF9F1C] hover:underline"
-                                    >
-                                        <Link2 className="w-4 h-4" />
-                                        {attachment.name}
-                                    </a>
                                     <button
-                                        onClick={() => deleteAttachment(attachment.id)}
-                                        className={clsx(
-                                            "p-1 rounded opacity-50 hover:opacity-100",
-                                            isDark ? "hover:bg-[#3A3A3A]" : "hover:bg-gray-100"
-                                        )}
+                                        onClick={() => handleAttachmentClick(attachment)}
+                                        className="flex items-center gap-2 text-sm text-left truncate flex-1 hover:opacity-80 transition-opacity"
                                     >
-                                        <Trash2 className="w-4 h-4 text-red-500" />
+                                        {attachment.type === 'file' ? (
+                                            attachment.name.match(/\.(jpg|jpeg|png|gif|webp)$/i) ? (
+                                                <ImageIcon className="w-4 h-4 text-purple-500 flex-shrink-0" />
+                                            ) : (
+                                                <FileText className="w-4 h-4 text-blue-500 flex-shrink-0" />
+                                            )
+                                        ) : (
+                                            <Link2 className="w-4 h-4 text-[#FF9F1C] flex-shrink-0" />
+                                        )}
+                                        <span className={clsx(
+                                            "truncate",
+                                            isDark ? "text-[#F5F5F5]" : "text-[#2D3436]"
+                                        )}>{attachment.name}</span>
                                     </button>
+
+                                    <div className="flex items-center gap-1">
+                                        {attachment.type === 'file' && (
+                                            <a
+                                                href={attachment.url}
+                                                download={attachment.name}
+                                                className={clsx(
+                                                    "p-1 rounded opacity-50 hover:opacity-100",
+                                                    isDark ? "hover:bg-[#3A3A3A] text-[#F5F5F5]" : "hover:bg-gray-100 text-[#2D3436]"
+                                                )}
+                                                onClick={(e) => e.stopPropagation()}
+                                            >
+                                                <Download className="w-4 h-4" />
+                                            </a>
+                                        )}
+                                        <button
+                                            onClick={() => deleteAttachment(attachment.id)}
+                                            className={clsx(
+                                                "p-1 rounded opacity-50 hover:opacity-100",
+                                                isDark ? "hover:bg-[#3A3A3A]" : "hover:bg-gray-100"
+                                            )}
+                                        >
+                                            <Trash2 className="w-4 h-4 text-red-500" />
+                                        </button>
+                                    </div>
                                 </div>
                             ))}
                         </div>
@@ -1391,7 +1496,7 @@ function CardModal({ card, onClose, onUpdate, onDelete, isDark }: CardModalProps
                                     onClick={addLink}
                                     className="px-3 py-2 bg-[#FF9F1C] text-white rounded-lg text-sm font-medium hover:bg-[#E08A15]"
                                 >
-                                    Add
+                                    Add Link
                                 </button>
                             </div>
                         </div>
@@ -1508,7 +1613,7 @@ function CardModal({ card, onClose, onUpdate, onDelete, isDark }: CardModalProps
                                     )}
                                 >
                                     <p className={clsx(
-                                        "text-sm",
+                                        "text-sm whitespace-pre-wrap",
                                         isDark ? "text-[#F5F5F5]" : "text-[#2D3436]"
                                     )}>
                                         {comment.text}
@@ -1520,19 +1625,30 @@ function CardModal({ card, onClose, onUpdate, onDelete, isDark }: CardModalProps
                                         )}>
                                             {format(new Date(comment.createdAt), 'MMM d, h:mm a')}
                                         </span>
-                                        <button
-                                            onClick={() => toggleCommentDone(comment.id)}
-                                            className={clsx(
-                                                "p-1 rounded transition-colors flex items-center gap-1",
-                                                comment.isMarkedDone
-                                                    ? "text-green-500"
-                                                    : isDark ? "text-[#666] hover:text-red-400" : "text-gray-400 hover:text-red-500"
-                                            )}
-                                            title={comment.isMarkedDone ? "Mark as not done" : "Mark as done"}
-                                        >
-                                            <Heart className={clsx("w-4 h-4", comment.isMarkedDone && "fill-current")} />
-                                            <span className="text-xs">{comment.isMarkedDone ? 'Done' : 'Mark done'}</span>
-                                        </button>
+                                        <div className="flex items-center gap-2">
+                                            <button
+                                                onClick={() => deleteComment(comment.id)}
+                                                className={clsx(
+                                                    "p-1 rounded transition-colors text-red-500 hover:bg-red-500/10",
+                                                )}
+                                                title="Delete comment"
+                                            >
+                                                <Trash2 className="w-3 h-3" />
+                                            </button>
+                                            <button
+                                                onClick={() => toggleCommentDone(comment.id)}
+                                                className={clsx(
+                                                    "p-1 rounded transition-colors flex items-center gap-1",
+                                                    comment.isMarkedDone
+                                                        ? "text-green-500"
+                                                        : isDark ? "text-[#666] hover:text-green-400" : "text-gray-400 hover:text-green-500"
+                                                )}
+                                                title={comment.isMarkedDone ? "Mark as not done" : "Mark as done"}
+                                            >
+                                                <Heart className={clsx("w-4 h-4", comment.isMarkedDone && "fill-current")} />
+                                                <span className="text-xs">{comment.isMarkedDone ? 'Done' : 'Mark done'}</span>
+                                            </button>
+                                        </div>
                                     </div>
                                 </div>
                             ))
@@ -1540,6 +1656,78 @@ function CardModal({ card, onClose, onUpdate, onDelete, isDark }: CardModalProps
                     </div>
                 </div>
             </div>
+
+            {/* Preview Modal */}
+            {previewAttachment && (
+                <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-200">
+                    <div className={clsx(
+                        "relative w-full max-w-3xl max-h-[85vh] flex flex-col rounded-2xl shadow-2xl overflow-hidden",
+                        isDark ? "bg-[#1A1A1A]" : "bg-white"
+                    )}>
+                        {/* Header */}
+                        <div className={clsx(
+                            "flex items-center justify-between p-4 border-b",
+                            isDark ? "border-[#2A2A2A]" : "border-gray-200"
+                        )}>
+                            <h3 className={clsx(
+                                "text-lg font-bold truncate",
+                                isDark ? "text-white" : "text-gray-900"
+                            )}>
+                                {previewAttachment.name}
+                            </h3>
+                            <button
+                                onClick={() => setPreviewAttachment(null)}
+                                className={clsx(
+                                    "p-2 rounded-lg transition-colors",
+                                    isDark ? "hover:bg-[#2A2A2A] text-gray-400" : "hover:bg-gray-100 text-gray-500"
+                                )}
+                            >
+                                <X className="w-5 h-5" />
+                            </button>
+                        </div>
+
+                        {/* Content */}
+                        <div className="flex-1 overflow-auto p-4 flex items-center justify-center bg-black/5 min-h-[300px]">
+                            {previewAttachment.name.match(/\.(jpg|jpeg|png|gif|webp)$/i) ? (
+                                <img
+                                    src={previewAttachment.url}
+                                    alt={previewAttachment.name}
+                                    className="max-w-full max-h-full object-contain rounded-lg shadow-lg"
+                                />
+                            ) : (
+                                <div className="flex flex-col items-center gap-4 text-gray-500">
+                                    <FileText className="w-16 h-16 opacity-50" />
+                                    <p>No preview available for this file type.</p>
+                                </div>
+                            )}
+                        </div>
+
+                        {/* Footer */}
+                        <div className={clsx(
+                            "p-4 border-t flex justify-end gap-2",
+                            isDark ? "border-[#2A2A2A]" : "border-gray-200"
+                        )}>
+                            <button
+                                onClick={() => setPreviewAttachment(null)}
+                                className={clsx(
+                                    "px-4 py-2 rounded-lg text-sm font-medium transition-colors",
+                                    isDark ? "hover:bg-[#2A2A2A] text-gray-300" : "hover:bg-gray-100 text-gray-600"
+                                )}
+                            >
+                                Close
+                            </button>
+                            <a
+                                href={previewAttachment.url}
+                                download={previewAttachment.name}
+                                className="px-4 py-2 bg-[#FF9F1C] text-white rounded-lg text-sm font-medium hover:bg-[#E08A15] flex items-center gap-2"
+                            >
+                                <Download className="w-4 h-4" />
+                                Download File
+                            </a>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {/* Custom Confirmation Popup Removed */}
         </div>
