@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react'
 import { Goal, GoalType, ChecklistItem, Comment } from '@/lib/types'
 import { fetchGoals, createGoal, updateGoal as updateGoalDB, deleteGoal as deleteGoalDB } from '@/lib/supabaseService'
 import { generateUUID } from '@/lib/uuid'
-import { Plus, X, Star, CheckSquare, MessageSquare, Calendar, Wallet, Target, Trash2, DollarSign, Heart } from 'lucide-react'
+import { Plus, X, Star, CheckSquare, MessageSquare, Calendar, Wallet, Target, Trash2, DollarSign, Heart, Edit2, Check } from 'lucide-react'
 import { useTheme } from '@/components/ThemeProvider'
 import { useData } from '@/lib/DataContext'
 import clsx from 'clsx'
@@ -294,6 +294,7 @@ export function GoalsBoard() {
             {/* Goal Modal */}
             {isModalOpen && selectedGoal && (
                 <GoalModal
+                    key={selectedGoal.id}
                     goal={selectedGoal}
                     onClose={() => {
                         setIsModalOpen(false)
@@ -326,6 +327,44 @@ function GoalModal({ goal, onClose, onUpdate, onDelete, isDark }: GoalModalProps
     const [budget, setBudget] = useState(goal.budget)
     const [newChecklistItem, setNewChecklistItem] = useState('')
     const [newComment, setNewComment] = useState('')
+
+    // Edit State
+    const [editingCheckId, setEditingCheckId] = useState<string | null>(null)
+    const [editingCheckText, setEditingCheckText] = useState('')
+    const [editingCommentId, setEditingCommentId] = useState<string | null>(null)
+    const [editingCommentText, setEditingCommentText] = useState('')
+
+    const startEditingCheck = (item: ChecklistItem) => {
+        setEditingCheckId(item.id)
+        setEditingCheckText(item.text)
+    }
+
+    const saveEditingCheck = () => {
+        if (!editingCheckId || !editingCheckText.trim()) {
+            setEditingCheckId(null)
+            return
+        }
+        setChecklist(checklist.map(item =>
+            item.id === editingCheckId ? { ...item, text: editingCheckText.trim() } : item
+        ))
+        setEditingCheckId(null)
+    }
+
+    const startEditingComment = (comment: Comment) => {
+        setEditingCommentId(comment.id)
+        setEditingCommentText(comment.text)
+    }
+
+    const saveEditingComment = () => {
+        if (!editingCommentId || !editingCommentText.trim()) {
+            setEditingCommentId(null)
+            return
+        }
+        setComments(comments.map(c =>
+            c.id === editingCommentId ? { ...c, text: editingCommentText.trim() } : c
+        ))
+        setEditingCommentId(null)
+    }
 
     const handleSave = () => {
         onUpdate({
@@ -374,6 +413,10 @@ function GoalModal({ goal, onClose, onUpdate, onDelete, isDark }: GoalModalProps
         setComments(comments.map(c =>
             c.id === id ? { ...c, isMarkedDone: !c.isMarkedDone } : c
         ))
+    }
+
+    const deleteComment = (id: string) => {
+        setComments(comments.filter(c => c.id !== id))
     }
 
     const checklistProgress = checklist.length > 0
@@ -592,15 +635,40 @@ function GoalModal({ goal, onClose, onUpdate, onDelete, isDark }: GoalModalProps
                                         onChange={() => toggleChecklistItem(item.id)}
                                         className="w-4 h-4 rounded accent-green-500"
                                     />
-                                    <span className={clsx(
-                                        "flex-1 text-sm",
-                                        item.completed && "line-through",
-                                        isDark
-                                            ? item.completed ? "text-[#666]" : "text-[#F5F5F5]"
-                                            : item.completed ? "text-gray-400" : "text-[#2D3436]"
-                                    )}>
-                                        {item.text}
-                                    </span>
+                                    {editingCheckId === item.id ? (
+                                        <div className="flex-1 flex items-center gap-1">
+                                            <input
+                                                type="text"
+                                                value={editingCheckText}
+                                                onChange={(e) => setEditingCheckText(e.target.value)}
+                                                onKeyDown={(e) => {
+                                                    if (e.key === 'Enter') saveEditingCheck()
+                                                    if (e.key === 'Escape') setEditingCheckId(null)
+                                                }}
+                                                className={clsx(
+                                                    "flex-1 p-1 text-sm rounded border outline-none",
+                                                    isDark ? "bg-[#333] border-[#444] text-white" : "bg-white border-gray-300"
+                                                )}
+                                                autoFocus
+                                            />
+                                            <button onClick={saveEditingCheck} className="p-1 text-green-500 hover:bg-green-500/10 rounded">
+                                                <Check className="w-3 h-3" />
+                                            </button>
+                                            <button onClick={() => setEditingCheckId(null)} className="p-1 text-red-500 hover:bg-red-500/10 rounded">
+                                                <X className="w-3 h-3" />
+                                            </button>
+                                        </div>
+                                    ) : (
+                                        <span className={clsx(
+                                            "flex-1 text-sm cursor-text",
+                                            item.completed && "line-through",
+                                            isDark
+                                                ? item.completed ? "text-[#666]" : "text-[#F5F5F5]"
+                                                : item.completed ? "text-gray-400" : "text-[#2D3436]"
+                                        )} onClick={() => startEditingCheck(item)}>
+                                            {item.text}
+                                        </span>
+                                    )}
                                     <button
                                         onClick={() => deleteChecklistItem(item.id)}
                                         className={clsx(
@@ -610,6 +678,18 @@ function GoalModal({ goal, onClose, onUpdate, onDelete, isDark }: GoalModalProps
                                     >
                                         <X className="w-3 h-3" />
                                     </button>
+                                    {/* Only show edit button if not editing */}
+                                    {editingCheckId !== item.id && (
+                                        <button
+                                            onClick={() => startEditingCheck(item)}
+                                            className={clsx(
+                                                "p-1 rounded opacity-50 hover:opacity-100",
+                                                isDark ? "hover:bg-[#3A3A3A]" : "hover:bg-gray-100"
+                                            )}
+                                        >
+                                            <Edit2 className="w-3 h-3" />
+                                        </button>
+                                    )}
                                 </div>
                             ))}
                         </div>
@@ -701,32 +781,74 @@ function GoalModal({ goal, onClose, onUpdate, onDelete, isDark }: GoalModalProps
                                 <div
                                     key={comment.id}
                                     className={clsx(
-                                        "p-3 rounded-lg",
+                                        "p-3 rounded-lg group",
                                         comment.isMarkedDone
                                             ? isDark ? "bg-green-900/20 border border-green-800" : "bg-green-50 border border-green-200"
                                             : isDark ? "bg-[#1A1A1A]" : "bg-white"
                                     )}
                                 >
                                     <p className={clsx(
-                                        "text-sm",
-                                        isDark ? "text-[#F5F5F5]" : "text-[#2D3436]"
+                                        "text-xs mb-1",
+                                        isDark ? "text-[#A0A0A0]" : "text-gray-500"
                                     )}>
-                                        {comment.text}
+                                        {format(new Date(comment.createdAt), 'MMM d, h:mm a')}
                                     </p>
-                                    <div className="flex items-center justify-between mt-2">
-                                        <span className={clsx(
-                                            "text-xs",
-                                            isDark ? "text-[#666]" : "text-gray-400"
+
+                                    {editingCommentId === comment.id ? (
+                                        <div className="mt-1 space-y-2">
+                                            <textarea
+                                                value={editingCommentText}
+                                                onChange={(e) => setEditingCommentText(e.target.value)}
+                                                className={clsx(
+                                                    "w-full p-2 text-sm rounded border outline-none resize-none",
+                                                    isDark ? "bg-[#333] border-[#444] text-white" : "bg-white border-gray-300"
+                                                )}
+                                                rows={2}
+                                                autoFocus
+                                            />
+                                            <div className="flex justify-end gap-2">
+                                                <button onClick={() => setEditingCommentId(null)} className="text-xs px-2 py-1 text-gray-500 hover:bg-gray-100 rounded">Cancel</button>
+                                                <button onClick={saveEditingComment} className="text-xs px-2 py-1 bg-[#FF9F1C] text-white rounded">Save</button>
+                                            </div>
+                                        </div>
+                                    ) : (
+                                        <p className={clsx(
+                                            "text-sm whitespace-pre-wrap",
+                                            isDark ? "text-[#E0E0E0]" : "text-[#2D3436]"
                                         )}>
-                                            {format(new Date(comment.createdAt), 'MMM d, h:mm a')}
-                                        </span>
+                                            {comment.text}
+                                        </p>
+                                    )}
+
+                                    <div className="flex items-center justify-end gap-2 mt-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                                        {editingCommentId !== comment.id && (
+                                            <button
+                                                onClick={() => startEditingComment(comment)}
+                                                className={clsx(
+                                                    "p-1 rounded transition-colors",
+                                                    isDark ? "text-[#A0A0A0] hover:text-blue-400 hover:bg-[#333]" : "text-gray-400 hover:text-blue-500 hover:bg-gray-100"
+                                                )}
+                                                title="Edit"
+                                            >
+                                                <Edit2 className="w-3 h-3" />
+                                            </button>
+                                        )}
+                                        <button
+                                            onClick={() => deleteComment(comment.id)}
+                                            className={clsx(
+                                                "p-1 rounded transition-colors text-red-500 hover:bg-red-500/10",
+                                            )}
+                                            title="Delete comment"
+                                        >
+                                            <Trash2 className="w-3 h-3" />
+                                        </button>
                                         <button
                                             onClick={() => toggleCommentDone(comment.id)}
                                             className={clsx(
                                                 "p-1 rounded transition-colors flex items-center gap-1",
                                                 comment.isMarkedDone
                                                     ? "text-green-500"
-                                                    : isDark ? "text-[#666] hover:text-red-400" : "text-gray-400 hover:text-red-500"
+                                                    : isDark ? "text-[#666] hover:text-green-400" : "text-gray-400 hover:text-green-500"
                                             )}
                                             title={comment.isMarkedDone ? "Mark as not done" : "Mark as done"}
                                         >

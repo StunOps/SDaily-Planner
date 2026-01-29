@@ -369,6 +369,7 @@ export function RevenueBoard() {
             {/* Revenue Modal */}
             {isModalOpen && selectedRevenue && (
                 <RevenueModal
+                    key={selectedRevenue.id}
                     revenue={selectedRevenue}
                     onClose={() => {
                         setIsModalOpen(false)

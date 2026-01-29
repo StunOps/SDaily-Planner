@@ -268,16 +268,16 @@ export function KanbanBoard() {
         setCards(sortedCards)
 
         // Also update rawCards to prevent useEffect from reverting status!
-        setRawCards(prevRaw => {
-            const exists = prevRaw.find(c => c.id === updatedCard.id)
-            if (exists) {
-                return prevRaw.map(c => c.id === updatedCard.id ? updatedCard : c)
-            } else {
-                // If it was a virtual plan card, it might not be in rawCards yet.
-                // We should add it to rawCards so useEffect sees it as "existing" with the CORRECT status
-                return [...prevRaw, updatedCard]
-            }
-        })
+        // Only update rawCards for REAL cards (not virtual plan-* cards)
+        if (!updatedCard.id.startsWith('plan-')) {
+            setRawCards(prevRaw => {
+                const exists = prevRaw.find(c => c.id === updatedCard.id)
+                if (exists) {
+                    return prevRaw.map(c => c.id === updatedCard.id ? updatedCard : c)
+                }
+                return prevRaw
+            })
+        }
 
         // Trigger side effects
         syncCardToPlanner(updatedCard)
@@ -414,8 +414,8 @@ export function KanbanBoard() {
         }
         // 2. Handle Plan Sync/Creation Case
         else if (finalCard.startDate) {
-            // Auto-categorize based on dates if not completed
-            if (finalCard.status !== 'completed') {
+            // Auto-categorize based on dates if not completed AND not in a custom section
+            if (finalCard.status !== 'completed' && !finalCard.status.startsWith('custom-')) {
                 const today = startOfDay(new Date())
                 const startDate = parseISO(finalCard.startDate)
                 const endDate = finalCard.endDate ? parseISO(finalCard.endDate) : startDate
@@ -992,9 +992,10 @@ export function KanbanBoard() {
                 </div>
             </DragDropContext>
 
-            {/* Card Modal */}
+            {/* Card Modal with Key for State Reset */}
             {isModalOpen && selectedCard && (
                 <CardModal
+                    key={selectedCard.id}
                     card={selectedCard}
                     onClose={() => {
                         setIsModalOpen(false)
