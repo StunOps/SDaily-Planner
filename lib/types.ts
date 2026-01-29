@@ -71,6 +71,7 @@ export interface KanbanCard {
     attachments: Attachment[]
     createdAt: string
     linkedPlanId?: string  // Links to Plan.id for sync
+    position?: number // For manual ordering
 }
 
 // ========== Goals Types ==========

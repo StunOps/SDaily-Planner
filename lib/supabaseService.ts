@@ -203,7 +203,8 @@ export async function fetchCards(): Promise<KanbanCard[]> {
     const { data: cards, error } = await supabase
         .from('kanban_cards')
         .select('*')
-        .order('created_at', { ascending: false })
+        .order('position', { ascending: true })
+        .order('created_at', { ascending: false }) // Secondary sort
 
     if (error) {
         console.error('Error fetching cards:', error)
@@ -240,7 +241,8 @@ export async function fetchCards(): Promise<KanbanCard[]> {
         checklist: (checklistMap[card.id] || []).map((i: Record<string, unknown>) => ({ id: i.id as string, text: i.text as string, completed: i.completed as boolean })),
         comments: (commentsMap[card.id] || []).map((c: Record<string, unknown>) => ({ id: c.id as string, text: c.text as string, createdAt: c.created_at as string, isMarkedDone: c.is_marked_done as boolean })),
         attachments: (attachmentsMap[card.id] || []).map((a: Record<string, string>) => ({ id: a.id, type: a.type, name: a.name, url: a.url })),
-        createdAt: card.created_at
+        createdAt: card.created_at,
+        position: card.position || 0
     } as KanbanCard))
 }
 
@@ -420,7 +422,7 @@ export async function updateCard(card: KanbanCard): Promise<boolean> {
                 id: realCardId,
                 attachments: []
             })
-        } else if (card.checklist.length > 0 || card.comments.length > 0) {
+        } else if (card.checklist.length > 0 || card.comments.length > 0 || typeof card.position === 'number') {
             // No real card exists, but we have data to save, so CREATE one
             const newCardId = generateUUID()
             const { error: createError } = await supabase
@@ -433,7 +435,8 @@ export async function updateCard(card: KanbanCard): Promise<boolean> {
                     start_date: card.startDate || null,
                     end_date: card.endDate || null,
                     linked_plan_id: planId,
-                    created_at: new Date().toISOString()
+                    created_at: new Date().toISOString(),
+                    position: card.position || 0
                 })
 
             if (createError) {
@@ -478,7 +481,8 @@ export async function updateCard(card: KanbanCard): Promise<boolean> {
         status: card.status,
         start_date: card.startDate || null,
         end_date: card.endDate || null,
-        linked_plan_id: card.linkedPlanId || null
+        linked_plan_id: card.linkedPlanId || null,
+        position: card.position || 0
     }
 
     const { error } = await supabase

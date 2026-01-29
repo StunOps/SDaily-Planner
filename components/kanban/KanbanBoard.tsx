@@ -5,7 +5,7 @@ import { DragDropContext, Droppable, Draggable, DropResult } from '@hello-pangea
 import { KanbanCard, CardStatus, ChecklistItem, Comment, Attachment, Plan, TimeSlot } from '@/lib/types'
 import { fetchCards, createCard, updateCard as updateCardDB, deleteCard as deleteCardDB, fetchPlans, deletePlan, updatePlan, createPlan } from '@/lib/supabaseService'
 import { generateUUID } from '@/lib/uuid'
-import { Plus, X, Calendar, CheckSquare, MessageSquare, Paperclip, Link2, Trash2, Heart, Clock, FileText, Download, Eye, Image as ImageIcon, Upload, AlignLeft } from 'lucide-react'
+import { Plus, X, Calendar, CheckSquare, MessageSquare, Paperclip, Link2, Trash2, Heart, Clock, FileText, Download, Eye, Image as ImageIcon, Upload, AlignLeft, Edit2, Check } from 'lucide-react'
 import { useTheme } from '@/components/ThemeProvider'
 import { useData } from '@/lib/DataContext'
 import clsx from 'clsx'
@@ -156,9 +156,13 @@ export function KanbanBoard() {
                     timeSlots: plan.timeSlots,
                     checklist: kanbanCards[existingCardIndex].checklist,
                     comments: kanbanCards[existingCardIndex].comments,
-                    status: kanbanCards[existingCardIndex].status === 'completed'
-                        ? 'completed'
-                        : newCard.status,
+                    // Preserve position from DB if it exists (for manually ordered plans)
+                    position: kanbanCards[existingCardIndex].position || newCard.position,
+                    status: kanbanCards[existingCardIndex].status.startsWith('custom-')
+                        ? kanbanCards[existingCardIndex].status // Keep in custom column
+                        : kanbanCards[existingCardIndex].status === 'completed'
+                            ? 'completed'
+                            : newCard.status,
                 }
             } else {
                 kanbanCards.push(newCard)
@@ -232,16 +236,48 @@ export function KanbanBoard() {
         const newStatus = destination.droppableId as CardStatus
 
         // Find the card being dragged
-        const card = cards.find(c => c.id === draggableId)
-        if (!card) return
+        const cardLike = cards.find(c => c.id === draggableId)
+        if (!cardLike) return
+
+        // Calculate new position
+        const destCards = cards
+            .filter(c => c.status === newStatus && c.id !== draggableId)
+            .sort((a, b) => (a.position || 0) - (b.position || 0))
+
+        let newPosition = 0
+        if (destCards.length === 0) {
+            newPosition = 1000
+        } else if (destination.index === 0) {
+            newPosition = (destCards[0].position || 0) / 2
+        } else if (destination.index >= destCards.length) {
+            newPosition = (destCards[destCards.length - 1].position || 0) + 1000
+        } else {
+            const prev = destCards[destination.index - 1]
+            const next = destCards[destination.index]
+            newPosition = ((prev.position || 0) + (next.position || 0)) / 2
+        }
 
         // Create updated card object
-        const updatedCard = { ...card, status: newStatus }
+        const updatedCard = { ...cardLike, status: newStatus, position: newPosition }
 
         // Optimistic update
-        setCards(prev => prev.map(c =>
+        const sortedCards = cards.map(c =>
             c.id === draggableId ? updatedCard : c
-        ))
+        ).sort((a, b) => (a.position || 0) - (b.position || 0))
+
+        setCards(sortedCards)
+
+        // Also update rawCards to prevent useEffect from reverting status!
+        setRawCards(prevRaw => {
+            const exists = prevRaw.find(c => c.id === updatedCard.id)
+            if (exists) {
+                return prevRaw.map(c => c.id === updatedCard.id ? updatedCard : c)
+            } else {
+                // If it was a virtual plan card, it might not be in rawCards yet.
+                // We should add it to rawCards so useEffect sees it as "existing" with the CORRECT status
+                return [...prevRaw, updatedCard]
+            }
+        })
 
         // Trigger side effects
         syncCardToPlanner(updatedCard)
@@ -263,19 +299,30 @@ export function KanbanBoard() {
                 timeSlots: updatedCard.timeSlots,
                 attachments: updatedCard.attachments,
                 createdAt: updatedCard.createdAt
+                // Plans don't natively support manual position yet in DB, 
+                // but since we are doing manual ordering, we might want to convert it to a real card if moved?
+                // For now, let's just trigger updatePlan.
+                // NOTE: If the user reorders a plan card, the position won't stick unless we promote it to a real card.
+                // Let's rely on my previous "promotion" logic in updateCard!
             }
 
-            updatePlan(planUpdate).catch(error => {
-                console.error('Failed to update plan status:', error)
-                // Revert UI if needed
-            });
+            // To save position for a PLAN, we MUST call updateCardDB (which promotes it)
+            // updateCardDB handles promotion if needed.
+            updateCardDB(updatedCard).catch(error => {
+                console.error('Failed to update card status/position:', error)
+                // Revert
+                setCards(prev => prev.map(c =>
+                    c.id === draggableId ? cardLike : c
+                ))
+            })
+
         } else {
             // It's a real card
             updateCardDB(updatedCard).catch(error => {
                 console.error('Failed to update card status:', error)
-                // Revert on failure (optional, but good practice)
+                // Revert on failure
                 setCards(prev => prev.map(c =>
-                    c.id === draggableId ? card : c
+                    c.id === draggableId ? cardLike : c
                 ))
             })
         }
@@ -284,6 +331,7 @@ export function KanbanBoard() {
     const addCard = async (status: CardStatus) => {
         if (!newCardTitle.trim()) return
 
+        const maxPos = Math.max(0, ...cards.map(c => c.position || 0))
         const newCard: KanbanCard = {
             id: generateUUID(),
             title: newCardTitle.trim(),
@@ -292,6 +340,7 @@ export function KanbanBoard() {
             comments: [],
             attachments: [],
             createdAt: new Date().toISOString(),
+            position: maxPos + 1000,
         }
 
         const created = await createCard(newCard)
@@ -442,7 +491,9 @@ export function KanbanBoard() {
     }
 
     const getColumnCards = (status: CardStatus) => {
-        return cards.filter(card => card.status === status)
+        return cards
+            .filter(card => card.status === status)
+            .sort((a, b) => (a.position || 0) - (b.position || 0))
     }
 
     return (
@@ -1035,7 +1086,45 @@ function CardModal({ card, onClose, onUpdate, onDelete, isDark }: CardModalProps
         }
     }
 
-    const handleClearDates = async () => {
+    // Edit State
+    const [editingCheckId, setEditingCheckId] = useState<string | null>(null)
+    const [editingCheckText, setEditingCheckText] = useState('')
+    const [editingCommentId, setEditingCommentId] = useState<string | null>(null)
+    const [editingCommentText, setEditingCommentText] = useState('')
+
+    const startEditingCheck = (item: ChecklistItem) => {
+        setEditingCheckId(item.id)
+        setEditingCheckText(item.text)
+    }
+
+    const saveEditingCheck = () => {
+        if (!editingCheckId || !editingCheckText.trim()) {
+            setEditingCheckId(null)
+            return
+        }
+        setChecklist(checklist.map(item =>
+            item.id === editingCheckId ? { ...item, text: editingCheckText.trim() } : item
+        ))
+        setEditingCheckId(null)
+    }
+
+    const startEditingComment = (comment: Comment) => {
+        setEditingCommentId(comment.id)
+        setEditingCommentText(comment.text)
+    }
+
+    const saveEditingComment = () => {
+        if (!editingCommentId || !editingCommentText.trim()) {
+            setEditingCommentId(null)
+            return
+        }
+        setComments(comments.map(c =>
+            c.id === editingCommentId ? { ...c, text: editingCommentText.trim() } : c
+        ))
+        setEditingCommentId(null)
+    }
+
+    const saveCardChanges = async () => {
         if (isSubmitting) return
         setIsSubmitting(true)
 
@@ -1235,7 +1324,7 @@ function CardModal({ card, onClose, onUpdate, onDelete, isDark }: CardModalProps
                             checked={!!startDate}
                             onChange={(e) => {
                                 if (!e.target.checked) {
-                                    handleClearDates()
+                                    saveCardChanges()
                                 } else {
                                     // Default to today when enabling
                                     setStartDate(new Date().toISOString().split('T')[0])
@@ -1332,15 +1421,40 @@ function CardModal({ card, onClose, onUpdate, onDelete, isDark }: CardModalProps
                                         onChange={() => toggleChecklistItem(item.id)}
                                         className="w-4 h-4 rounded accent-green-500"
                                     />
-                                    <span className={clsx(
-                                        "flex-1 text-sm",
-                                        item.completed && "line-through",
-                                        isDark
-                                            ? item.completed ? "text-[#666]" : "text-[#F5F5F5]"
-                                            : item.completed ? "text-gray-400" : "text-[#2D3436]"
-                                    )}>
-                                        {item.text}
-                                    </span>
+                                    {editingCheckId === item.id ? (
+                                        <div className="flex-1 flex items-center gap-1">
+                                            <input
+                                                type="text"
+                                                value={editingCheckText}
+                                                onChange={(e) => setEditingCheckText(e.target.value)}
+                                                onKeyDown={(e) => {
+                                                    if (e.key === 'Enter') saveEditingCheck()
+                                                    if (e.key === 'Escape') setEditingCheckId(null)
+                                                }}
+                                                className={clsx(
+                                                    "flex-1 p-1 text-sm rounded border outline-none",
+                                                    isDark ? "bg-[#333] border-[#444] text-white" : "bg-white border-gray-300"
+                                                )}
+                                                autoFocus
+                                            />
+                                            <button onClick={saveEditingCheck} className="p-1 text-green-500 hover:bg-green-500/10 rounded">
+                                                <Check className="w-3 h-3" />
+                                            </button>
+                                            <button onClick={() => setEditingCheckId(null)} className="p-1 text-red-500 hover:bg-red-500/10 rounded">
+                                                <X className="w-3 h-3" />
+                                            </button>
+                                        </div>
+                                    ) : (
+                                        <span className={clsx(
+                                            "flex-1 text-sm cursor-text",
+                                            item.completed && "line-through",
+                                            isDark
+                                                ? item.completed ? "text-[#666]" : "text-[#F5F5F5]"
+                                                : item.completed ? "text-gray-400" : "text-[#2D3436]"
+                                        )} onClick={() => startEditingCheck(item)}>
+                                            {item.text}
+                                        </span>
+                                    )}
                                     <button
                                         onClick={() => deleteChecklistItem(item.id)}
                                         className={clsx(
@@ -1350,6 +1464,18 @@ function CardModal({ card, onClose, onUpdate, onDelete, isDark }: CardModalProps
                                     >
                                         <X className="w-3 h-3" />
                                     </button>
+                                    {/* Only show edit button if not editing */}
+                                    {editingCheckId !== item.id && (
+                                        <button
+                                            onClick={() => startEditingCheck(item)}
+                                            className={clsx(
+                                                "p-1 rounded opacity-50 hover:opacity-100",
+                                                isDark ? "hover:bg-[#3A3A3A]" : "hover:bg-gray-100"
+                                            )}
+                                        >
+                                            <Edit2 className="w-3 h-3" />
+                                        </button>
+                                    )}
                                 </div>
                             ))}
                         </div>
@@ -1606,130 +1732,163 @@ function CardModal({ card, onClose, onUpdate, onDelete, isDark }: CardModalProps
                                 <div
                                     key={comment.id}
                                     className={clsx(
-                                        "p-3 rounded-lg",
+                                        "p-3 rounded-lg group",
                                         comment.isMarkedDone
                                             ? isDark ? "bg-green-900/20 border border-green-800" : "bg-green-50 border border-green-200"
                                             : isDark ? "bg-[#1A1A1A]" : "bg-white"
                                     )}
                                 >
                                     <p className={clsx(
-                                        "text-sm whitespace-pre-wrap",
-                                        isDark ? "text-[#F5F5F5]" : "text-[#2D3436]"
+                                        "text-xs mb-1",
+                                        isDark ? "text-[#A0A0A0]" : "text-gray-500"
                                     )}>
-                                        {comment.text}
+                                        {format(new Date(comment.createdAt), 'MMM d, h:mm a')}
                                     </p>
-                                    <div className="flex items-center justify-between mt-2">
-                                        <span className={clsx(
-                                            "text-xs",
-                                            isDark ? "text-[#666]" : "text-gray-400"
-                                        )}>
-                                            {format(new Date(comment.createdAt), 'MMM d, h:mm a')}
-                                        </span>
-                                        <div className="flex items-center gap-2">
-                                            <button
-                                                onClick={() => deleteComment(comment.id)}
+
+                                    {editingCommentId === comment.id ? (
+                                        <div className="mt-1 space-y-2">
+                                            <textarea
+                                                value={editingCommentText}
+                                                onChange={(e) => setEditingCommentText(e.target.value)}
                                                 className={clsx(
-                                                    "p-1 rounded transition-colors text-red-500 hover:bg-red-500/10",
+                                                    "w-full p-2 text-sm rounded border outline-none resize-none",
+                                                    isDark ? "bg-[#333] border-[#444] text-white" : "bg-white border-gray-300"
                                                 )}
-                                                title="Delete comment"
-                                            >
-                                                <Trash2 className="w-3 h-3" />
-                                            </button>
-                                            <button
-                                                onClick={() => toggleCommentDone(comment.id)}
-                                                className={clsx(
-                                                    "p-1 rounded transition-colors flex items-center gap-1",
-                                                    comment.isMarkedDone
-                                                        ? "text-green-500"
-                                                        : isDark ? "text-[#666] hover:text-green-400" : "text-gray-400 hover:text-green-500"
-                                                )}
-                                                title={comment.isMarkedDone ? "Mark as not done" : "Mark as done"}
-                                            >
-                                                <Heart className={clsx("w-4 h-4", comment.isMarkedDone && "fill-current")} />
-                                                <span className="text-xs">{comment.isMarkedDone ? 'Done' : 'Mark done'}</span>
-                                            </button>
+                                                rows={2}
+                                                autoFocus
+                                            />
+                                            <div className="flex justify-end gap-2">
+                                                <button onClick={() => setEditingCommentId(null)} className="text-xs px-2 py-1 text-gray-500 hover:bg-gray-100 rounded">Cancel</button>
+                                                <button onClick={saveEditingComment} className="text-xs px-2 py-1 bg-[#FF9F1C] text-white rounded">Save</button>
+                                            </div>
                                         </div>
+                                    ) : (
+                                        <p className={clsx(
+                                            "text-sm whitespace-pre-wrap",
+                                            isDark ? "text-[#E0E0E0]" : "text-[#2D3436]"
+                                        )}>
+                                            {comment.text}
+                                        </p>
+                                    )}
+
+                                    <div className="flex items-center justify-end gap-2 mt-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                                        {editingCommentId !== comment.id && (
+                                            <button
+                                                onClick={() => startEditingComment(comment)}
+                                                className={clsx(
+                                                    "p-1 rounded transition-colors",
+                                                    isDark ? "text-[#A0A0A0] hover:text-blue-400 hover:bg-[#333]" : "text-gray-400 hover:text-blue-500 hover:bg-gray-100"
+                                                )}
+                                                title="Edit"
+                                            >
+                                                <Edit2 className="w-3 h-3" />
+                                            </button>
+                                        )}
+                                        <button
+                                            onClick={() => deleteComment(comment.id)}
+                                            className={clsx(
+                                                "p-1 rounded transition-colors text-red-500 hover:bg-red-500/10",
+                                            )}
+                                            title="Delete comment"
+                                        >
+                                            <Trash2 className="w-3 h-3" />
+                                        </button>
+                                        <button
+                                            onClick={() => toggleCommentDone(comment.id)}
+                                            className={clsx(
+                                                "p-1 rounded transition-colors flex items-center gap-1",
+                                                comment.isMarkedDone
+                                                    ? "text-green-500"
+                                                    : isDark ? "text-[#666] hover:text-green-400" : "text-gray-400 hover:text-green-500"
+                                            )}
+                                            title={comment.isMarkedDone ? "Mark as not done" : "Mark as done"}
+                                        >
+                                            <Heart className={clsx("w-4 h-4", comment.isMarkedDone && "fill-current")} />
+                                            <span className="text-xs">{comment.isMarkedDone ? 'Done' : 'Mark done'}</span>
+                                        </button>
                                     </div>
                                 </div>
                             ))
                         )}
                     </div>
                 </div>
-            </div>
+            </div >
 
             {/* Preview Modal */}
-            {previewAttachment && (
-                <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-200">
-                    <div className={clsx(
-                        "relative w-full max-w-3xl max-h-[85vh] flex flex-col rounded-2xl shadow-2xl overflow-hidden",
-                        isDark ? "bg-[#1A1A1A]" : "bg-white"
-                    )}>
-                        {/* Header */}
+            {
+                previewAttachment && (
+                    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-200">
                         <div className={clsx(
-                            "flex items-center justify-between p-4 border-b",
-                            isDark ? "border-[#2A2A2A]" : "border-gray-200"
+                            "relative w-full max-w-3xl max-h-[85vh] flex flex-col rounded-2xl shadow-2xl overflow-hidden",
+                            isDark ? "bg-[#1A1A1A]" : "bg-white"
                         )}>
-                            <h3 className={clsx(
-                                "text-lg font-bold truncate",
-                                isDark ? "text-white" : "text-gray-900"
+                            {/* Header */}
+                            <div className={clsx(
+                                "flex items-center justify-between p-4 border-b",
+                                isDark ? "border-[#2A2A2A]" : "border-gray-200"
                             )}>
-                                {previewAttachment.name}
-                            </h3>
-                            <button
-                                onClick={() => setPreviewAttachment(null)}
-                                className={clsx(
-                                    "p-2 rounded-lg transition-colors",
-                                    isDark ? "hover:bg-[#2A2A2A] text-gray-400" : "hover:bg-gray-100 text-gray-500"
-                                )}
-                            >
-                                <X className="w-5 h-5" />
-                            </button>
-                        </div>
+                                <h3 className={clsx(
+                                    "text-lg font-bold truncate",
+                                    isDark ? "text-white" : "text-gray-900"
+                                )}>
+                                    {previewAttachment.name}
+                                </h3>
+                                <button
+                                    onClick={() => setPreviewAttachment(null)}
+                                    className={clsx(
+                                        "p-2 rounded-lg transition-colors",
+                                        isDark ? "hover:bg-[#2A2A2A] text-gray-400" : "hover:bg-gray-100 text-gray-500"
+                                    )}
+                                >
+                                    <X className="w-5 h-5" />
+                                </button>
+                            </div>
 
-                        {/* Content */}
-                        <div className="flex-1 overflow-auto p-4 flex items-center justify-center bg-black/5 min-h-[300px]">
-                            {previewAttachment.name.match(/\.(jpg|jpeg|png|gif|webp)$/i) ? (
-                                <img
-                                    src={previewAttachment.url}
-                                    alt={previewAttachment.name}
-                                    className="max-w-full max-h-full object-contain rounded-lg shadow-lg"
-                                />
-                            ) : (
-                                <div className="flex flex-col items-center gap-4 text-gray-500">
-                                    <FileText className="w-16 h-16 opacity-50" />
-                                    <p>No preview available for this file type.</p>
-                                </div>
-                            )}
-                        </div>
-
-                        {/* Footer */}
-                        <div className={clsx(
-                            "p-4 border-t flex justify-end gap-2",
-                            isDark ? "border-[#2A2A2A]" : "border-gray-200"
-                        )}>
-                            <button
-                                onClick={() => setPreviewAttachment(null)}
-                                className={clsx(
-                                    "px-4 py-2 rounded-lg text-sm font-medium transition-colors",
-                                    isDark ? "hover:bg-[#2A2A2A] text-gray-300" : "hover:bg-gray-100 text-gray-600"
+                            {/* Content */}
+                            <div className="flex-1 overflow-auto p-4 flex items-center justify-center bg-black/5 min-h-[300px]">
+                                {previewAttachment.name.match(/\.(jpg|jpeg|png|gif|webp)$/i) ? (
+                                    <img
+                                        src={previewAttachment.url}
+                                        alt={previewAttachment.name}
+                                        className="max-w-full max-h-full object-contain rounded-lg shadow-lg"
+                                    />
+                                ) : (
+                                    <div className="flex flex-col items-center gap-4 text-gray-500">
+                                        <FileText className="w-16 h-16 opacity-50" />
+                                        <p>No preview available for this file type.</p>
+                                    </div>
                                 )}
-                            >
-                                Close
-                            </button>
-                            <a
-                                href={previewAttachment.url}
-                                download={previewAttachment.name}
-                                className="px-4 py-2 bg-[#FF9F1C] text-white rounded-lg text-sm font-medium hover:bg-[#E08A15] flex items-center gap-2"
-                            >
-                                <Download className="w-4 h-4" />
-                                Download File
-                            </a>
+                            </div>
+
+                            {/* Footer */}
+                            <div className={clsx(
+                                "p-4 border-t flex justify-end gap-2",
+                                isDark ? "border-[#2A2A2A]" : "border-gray-200"
+                            )}>
+                                <button
+                                    onClick={() => setPreviewAttachment(null)}
+                                    className={clsx(
+                                        "px-4 py-2 rounded-lg text-sm font-medium transition-colors",
+                                        isDark ? "hover:bg-[#2A2A2A] text-gray-300" : "hover:bg-gray-100 text-gray-600"
+                                    )}
+                                >
+                                    Close
+                                </button>
+                                <a
+                                    href={previewAttachment.url}
+                                    download={previewAttachment.name}
+                                    className="px-4 py-2 bg-[#FF9F1C] text-white rounded-lg text-sm font-medium hover:bg-[#E08A15] flex items-center gap-2"
+                                >
+                                    <Download className="w-4 h-4" />
+                                    Download File
+                                </a>
+                            </div>
                         </div>
                     </div>
-                </div>
-            )}
+                )
+            }
 
             {/* Custom Confirmation Popup Removed */}
-        </div>
+        </div >
     )
 }
