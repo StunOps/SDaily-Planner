@@ -356,7 +356,10 @@ export function KanbanBoard() {
 
         // 1. Handle Date Clearing Case (Atomic)
         if (!updatedCard.startDate) {
-            finalCard.status = 'inbox'
+            // Only move to inbox if NOT in a custom section
+            if (!finalCard.status.startsWith('custom-')) {
+                finalCard.status = 'inbox'
+            }
 
             // Special Case: If this was a virtual plan card (starts with 'plan-'), 
             // we must CREATE a real card to persist it, because the plan (its source) is about to be deleted.
@@ -367,7 +370,7 @@ export function KanbanBoard() {
                         ...finalCard,
                         id: newCardId,
                         linkedPlanId: undefined, // Fully unlink
-                        status: 'inbox',
+                        status: finalCard.status, // Preserve accepted status
                         createdAt: new Date().toISOString()
                     }
 
@@ -645,19 +648,20 @@ export function KanbanBoard() {
                                                                     )}
                                                                     {card.comments.length > 0 && (
                                                                         <span className={clsx(
-                                                                            "text-xs p-1 rounded flex items-center gap-1",
-                                                                            isDark ? "text-gray-400 hover:bg-gray-700/50" : "text-gray-400 hover:bg-gray-100"
+                                                                            "text-xs px-2 py-0.5 rounded flex items-center gap-1",
+                                                                            isDark ? "text-gray-400 bg-gray-700/30" : "text-gray-500 bg-gray-100"
                                                                         )}>
-                                                                            <MessageSquare className="w-3.5 h-3.5" />
-                                                                            {/* No count label */}
+                                                                            <MessageSquare className="w-3 h-3" />
+                                                                            {card.comments.length}
                                                                         </span>
                                                                     )}
                                                                     {card.attachments.length > 0 && (
                                                                         <span className={clsx(
-                                                                            "text-xs p-1 rounded flex items-center gap-1",
-                                                                            isDark ? "text-gray-400 hover:bg-gray-700/50" : "text-gray-400 hover:bg-gray-100"
+                                                                            "text-xs px-2 py-0.5 rounded flex items-center gap-1",
+                                                                            isDark ? "text-gray-400 bg-gray-700/30" : "text-gray-500 bg-gray-100"
                                                                         )}>
-                                                                            <Paperclip className="w-3.5 h-3.5" />
+                                                                            <Paperclip className="w-3 h-3" />
+                                                                            {card.attachments.length}
                                                                         </span>
                                                                     )}
                                                                 </div>
@@ -855,6 +859,32 @@ export function KanbanBoard() {
                                                                         )}>
                                                                             <CheckSquare className="w-3 h-3" />
                                                                             {card.checklist.filter(c => c.completed).length}/{card.checklist.length}
+                                                                        </span>
+                                                                    )}
+                                                                    {card.description && (
+                                                                        <span className={clsx(
+                                                                            "text-xs p-1 rounded flex items-center gap-1",
+                                                                            isDark ? "text-gray-400 hover:bg-gray-700/50" : "text-gray-400 hover:bg-gray-100"
+                                                                        )}>
+                                                                            <AlignLeft className="w-3.5 h-3.5" />
+                                                                        </span>
+                                                                    )}
+                                                                    {card.comments.length > 0 && (
+                                                                        <span className={clsx(
+                                                                            "text-xs px-2 py-0.5 rounded flex items-center gap-1",
+                                                                            isDark ? "text-gray-400 bg-gray-700/30" : "text-gray-500 bg-gray-100"
+                                                                        )}>
+                                                                            <MessageSquare className="w-3 h-3" />
+                                                                            {card.comments.length}
+                                                                        </span>
+                                                                    )}
+                                                                    {card.attachments.length > 0 && (
+                                                                        <span className={clsx(
+                                                                            "text-xs px-2 py-0.5 rounded flex items-center gap-1",
+                                                                            isDark ? "text-gray-400 bg-gray-700/30" : "text-gray-500 bg-gray-100"
+                                                                        )}>
+                                                                            <Paperclip className="w-3 h-3" />
+                                                                            {card.attachments.length}
                                                                         </span>
                                                                     )}
                                                                 </div>
