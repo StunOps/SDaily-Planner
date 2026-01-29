@@ -450,7 +450,7 @@ export function KanbanBoard() {
             if (!success) throw new Error("Could not update card in database.")
 
             // 5. Force Refreshes and Close
-            await refreshAll()
+            refreshAll(true) // Silent refresh
             setIsModalOpen(false)
             setSelectedCard(null)
         } catch (err: any) {
@@ -480,7 +480,7 @@ export function KanbanBoard() {
             await deleteCardDB(cardId)
         }
 
-        await refreshAll()
+        refreshAll(true)
         setIsModalOpen(false)
         setSelectedCard(null)
     }

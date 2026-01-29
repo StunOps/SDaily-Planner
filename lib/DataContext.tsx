@@ -23,11 +23,11 @@ interface DataContextType {
     setRevenues: (revenues: Revenue[] | ((prev: Revenue[]) => Revenue[])) => void
 
     // Refresh functions
-    refreshPlans: () => Promise<void>
-    refreshCards: () => Promise<void>
-    refreshGoals: () => Promise<void>
-    refreshRevenues: () => Promise<void>
-    refreshAll: () => Promise<void>
+    refreshPlans: (silent?: boolean) => Promise<void>
+    refreshCards: (silent?: boolean) => Promise<void>
+    refreshGoals: (silent?: boolean) => Promise<void>
+    refreshRevenues: (silent?: boolean) => Promise<void>
+    refreshAll: (silent?: boolean) => Promise<void>
 }
 
 const DataContext = createContext<DataContextType | undefined>(undefined)
