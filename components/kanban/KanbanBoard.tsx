@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from 'react'
 import { DragDropContext, Droppable, Draggable, DropResult } from '@hello-pangea/dnd'
 import { KanbanCard, CardStatus, ChecklistItem, Comment, Attachment, Plan, TimeSlot } from '@/lib/types'
 import { fetchCards, createCard, updateCard as updateCardDB, deleteCard as deleteCardDB, fetchPlans, deletePlan, updatePlan, createPlan } from '@/lib/supabaseService'
+import { supabase } from '@/lib/supabaseClient'
 import { generateUUID } from '@/lib/uuid'
 import { Plus, X, Calendar, CheckSquare, MessageSquare, Paperclip, Link2, Trash2, Heart, Clock, FileText, Download, Eye, Image as ImageIcon, Upload, AlignLeft, Edit2, Check } from 'lucide-react'
 import { useTheme } from '@/components/ThemeProvider'
@@ -1227,11 +1228,17 @@ function CardModal({ card, onClose, onUpdate, onDelete, isDark }: CardModalProps
 
     const addLink = () => {
         if (!newLinkName.trim() || !newLinkUrl.trim()) return
+
+        let finalUrl = newLinkUrl.trim()
+        if (!/^https?:\/\//i.test(finalUrl)) {
+            finalUrl = 'https://' + finalUrl
+        }
+
         setAttachments([...attachments, {
             id: generateUUID(),
             type: 'link',
             name: newLinkName.trim(),
-            url: newLinkUrl.trim(),
+            url: finalUrl,
         }])
         setNewLinkName('')
         setNewLinkUrl('')
@@ -1245,21 +1252,42 @@ function CardModal({ card, onClose, onUpdate, onDelete, isDark }: CardModalProps
     const fileInputRef = useRef<HTMLInputElement>(null)
     const [previewAttachment, setPreviewAttachment] = useState<Attachment | null>(null)
 
-    const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0]
         if (!file) return
 
-        const reader = new FileReader()
-        reader.onloadend = () => {
-            const base64String = reader.result as string
+        const fileName = `card_${Date.now()}_${file.name.replace(/[^a-zA-Z0-9.-]/g, '_')}`
+
+        try {
+            // Upload to Supabase Storage
+            const { data, error } = await supabase.storage
+                .from('attachments')
+                .upload(fileName, file, {
+                    cacheControl: '3600',
+                    upsert: false
+                })
+
+            if (error) {
+                console.error('Upload error:', error)
+                alert('Failed to upload file: ' + error.message)
+                return
+            }
+
+            // Get public URL
+            const { data: urlData } = supabase.storage
+                .from('attachments')
+                .getPublicUrl(fileName)
+
             setAttachments([...attachments, {
                 id: generateUUID(),
                 type: 'file',
                 name: file.name,
-                url: base64String
+                url: urlData.publicUrl
             }])
+        } catch (err) {
+            console.error('Upload error:', err)
+            alert('Failed to upload file')
         }
-        reader.readAsDataURL(file)
     }
 
     const handleAttachmentClick = (attachment: Attachment) => {

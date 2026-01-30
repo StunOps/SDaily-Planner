@@ -1,0 +1,21 @@
+{
+    "cli": {
+        "version": ">= 10.0.0"
+    },
+    "build": {
+        "development": {
+            "developmentClient": true,
+            "distribution": "internal",
+            "env": {
+                "npm_config_legacy_peer_deps": "true"
+            }
+        },
+        "preview": {
+            "distribution": "internal"
+        },
+        "production": {}
+    },
+    "submit": {
+        "production": {}
+    }
+}

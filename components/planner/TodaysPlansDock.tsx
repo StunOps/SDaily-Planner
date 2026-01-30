@@ -17,8 +17,8 @@ interface TodaysPlansDockProps {
 export default function TodaysPlansDock({ plans, onPlanClick, onToggleComplete }: TodaysPlansDockProps) {
     const { theme } = useTheme()
     const isDark = theme === 'dark'
-    const [isExpanded, setIsExpanded] = useState(true)
-    const [isVisible, setIsVisible] = useState(true)
+    const [isExpanded, setIsExpanded] = useState(false)
+    const [isVisible, setIsVisible] = useState(false)
 
     // Get today's plans
     const todayPlans = plans.filter(plan => {

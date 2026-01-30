@@ -1,0 +1,43 @@
+{
+  "expo": {
+    "name": "SDaily Planner",
+    "slug": "sdaily-planner",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/Logo Only (Colored).jpg",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/Logo Only (White).jpg",
+      "resizeMode": "contain",
+      "backgroundColor": "#121212"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.sdaily.planner"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/Logo Only (Colored).jpg",
+        "backgroundColor": "#121212"
+      },
+      "package": "com.sdaily.planner",
+      "edgeToEdgeEnabled": true
+    },
+    "web": {
+      "favicon": "./assets/Logo Only (Colored).jpg"
+    },
+    "notification": {
+      "icon": "./assets/Logo Only (Colored).jpg",
+      "color": "#FF9F1C"
+    },
+    "plugins": [
+      "expo-notifications"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "8c9d513a-6265-4c47-98a4-0260061ba798"
+      }
+    }
+  }
+}
