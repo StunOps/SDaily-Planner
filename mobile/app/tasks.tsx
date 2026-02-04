@@ -23,32 +23,67 @@ export default function TasksScreen() {
     const fetchTasks = async () => {
         setLoading(true);
         try {
-            // Fetch all cards and filter client-side
-            const { data: allCards, error } = await supabase
-                .from('kanban_cards')
-                .select('*')
-                .order('position', { ascending: true });
+            if (type === 'pending') {
+                const today = format(new Date(), 'yyyy-MM-dd');
 
-            if (allCards) {
-                let filtered: KanbanCard[] = [];
+                // 1. Fetch pending cards
+                const { data: pendingCards } = await supabase
+                    .from('kanban_cards')
+                    .select('*')
+                    .eq('status', 'pending')
+                    .order('position', { ascending: true });
 
-                if (type === 'pending') {
-                    filtered = allCards.filter(c => c.status === 'pending');
-                } else if (type === 'due') {
-                    const today = startOfDay(new Date());
-                    filtered = allCards.filter(card => {
-                        if (card.status === 'in-progress') return true;
-                        if (card.start_date && card.end_date) {
-                            const start = startOfDay(parseISO(card.start_date));
-                            const end = startOfDay(parseISO(card.end_date));
-                            return isWithinInterval(today, { start, end });
-                        }
-                        if (card.start_date && !card.end_date) {
-                            return startOfDay(parseISO(card.start_date)).getTime() === today.getTime();
-                        }
-                        return false;
-                    });
-                }
+                // 2. Get IDs of plans that already have linked pending cards
+                const linkedPlanIds = new Set(
+                    (pendingCards || [])
+                        .filter(c => c.linked_plan_id)
+                        .map(c => c.linked_plan_id)
+                );
+
+                // 3. Fetch orphan future plans (not linked to any pending card)
+                const { data: futurePlans } = await supabase
+                    .from('plans')
+                    .select('*')
+                    .gt('date', today)
+                    .eq('completed', false);
+
+                const orphanPlans = (futurePlans || []).filter(p => !linkedPlanIds.has(p.id));
+
+                // 4. Convert orphan plans to card-like objects for display
+                const planCards: KanbanCard[] = orphanPlans.map(plan => ({
+                    id: `plan-${plan.id}`,
+                    title: plan.title,
+                    description: plan.description,
+                    status: 'pending',
+                    start_date: plan.date,
+                    end_date: plan.due_date,
+                    linked_plan_id: plan.id,
+                    created_at: plan.created_at,
+                    position: 999
+                }));
+
+                // 5. Merge: real cards first, then virtual plan cards
+                setTasks([...(pendingCards || []), ...planCards]);
+            } else if (type === 'due') {
+                // Fetch all cards for due today
+                const { data: allCards } = await supabase
+                    .from('kanban_cards')
+                    .select('*')
+                    .order('position', { ascending: true });
+
+                const today = startOfDay(new Date());
+                const filtered = (allCards || []).filter(card => {
+                    if (card.status === 'in-progress') return true;
+                    if (card.start_date && card.end_date) {
+                        const start = startOfDay(parseISO(card.start_date));
+                        const end = startOfDay(parseISO(card.end_date));
+                        return isWithinInterval(today, { start, end });
+                    }
+                    if (card.start_date && !card.end_date) {
+                        return startOfDay(parseISO(card.start_date)).getTime() === today.getTime();
+                    }
+                    return false;
+                });
                 setTasks(filtered);
             }
         } catch (e) {

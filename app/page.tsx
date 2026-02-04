@@ -221,41 +221,8 @@ export default function Home() {
 
   const dueTodayCards = plansDueToday + cardsDueToday
 
-  // Upcoming: Count BOTH plans and cards for tomorrow onwards
-  // Upcoming plans (not completed)
-  const upcomingPlans = plans.filter(plan => {
-    if (plan.completed) return false
-    const tomorrow = new Date()
-    tomorrow.setDate(tomorrow.getDate() + 1)
-    const tomorrowStr = format(tomorrow, 'yyyy-MM-dd')
-    // Check if plan date is tomorrow or later
-    if (plan.date >= tomorrowStr) return true
-    // Check if plan has a due date that's tomorrow or later
-    if (plan.hasDueDate && plan.dueDate && plan.dueDate >= tomorrowStr) return true
-    return false
-  }).length
-
-  // Upcoming cards (not completed)
-  const upcomingCardsCount = cards.filter(card => {
-    if (card.status === 'completed') return false
-    const tomorrow = new Date()
-    tomorrow.setDate(tomorrow.getDate() + 1)
-    tomorrow.setHours(0, 0, 0, 0)
-
-    if (card.endDate) {
-      try {
-        if (parseISO(card.endDate) >= tomorrow) return true
-      } catch (_e) { /* ignore */ }
-    }
-    if (card.startDate) {
-      try {
-        if (parseISO(card.startDate) >= tomorrow) return true
-      } catch (_e) { /* ignore */ }
-    }
-    return false
-  }).length
-
-  const upcomingCards = upcomingPlans + upcomingCardsCount
+  // Upcoming: Count only cards in "Pending" status (matches Kanban Pending column)
+  const upcomingCards = cards.filter(card => card.status === 'pending').length
 
   // Active goals count (from Goals section)
   const activeGoals = goals.length

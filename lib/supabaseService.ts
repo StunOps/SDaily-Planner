@@ -132,15 +132,15 @@ export async function createPlan(plan: Plan): Promise<Plan | null> {
 
     // Insert attachments
     if (plan.attachments && plan.attachments.length > 0) {
-        await supabase.from('plan_attachments').insert(
-            plan.attachments.map(att => ({
-                id: att.id,
-                plan_id: plan.id,
-                type: att.type,
-                name: att.name,
-                url: att.url
-            }))
-        )
+        // Regenerate IDs
+        const attachmentsWithNewIds = plan.attachments.map(att => ({
+            id: generateUUID(),
+            plan_id: plan.id,
+            type: att.type,
+            name: att.name,
+            url: att.url
+        }))
+        await supabase.from('plan_attachments').insert(attachmentsWithNewIds)
     }
 
     return plan
@@ -167,21 +167,54 @@ export async function updatePlan(plan: Plan): Promise<boolean> {
     // Update attachments
     await supabase.from('plan_attachments').delete().eq('plan_id', plan.id)
     if (plan.attachments && plan.attachments.length > 0) {
-        await supabase.from('plan_attachments').insert(
-            plan.attachments.map(att => ({
-                id: att.id,
-                plan_id: plan.id,
-                type: att.type,
-                name: att.name,
-                url: att.url
-            }))
-        )
+        // Regenerate IDs
+        const attachmentsWithNewIds = plan.attachments.map(att => ({
+            id: generateUUID(),
+            plan_id: plan.id,
+            type: att.type,
+            name: att.name,
+            url: att.url
+        }))
+        await supabase.from('plan_attachments').insert(attachmentsWithNewIds)
     }
 
     return true
 }
 
 export async function deletePlan(planId: string): Promise<boolean> {
+    // 1. Manually delete attachments first (in case CASCADE is not set)
+    const { error: attError } = await supabase
+        .from('plan_attachments')
+        .delete()
+        .eq('plan_id', planId)
+
+    if (attError) {
+        console.error('Error deleting plan attachments:', attError)
+        // Continue anyway, maybe they don't exist
+    }
+
+    // 2. Manually delete time slots (in case CASCADE is not set)
+    const { error: tsError } = await supabase
+        .from('plan_time_slots')
+        .delete()
+        .eq('plan_id', planId)
+
+    if (tsError) {
+        console.error('Error deleting plan time slots:', tsError)
+    }
+
+    // 3. CRITICAL: Force unlink ANY cards that might still reference this plan
+    // This handles "zombie" cards that might be blocking deletion via FK
+    const { error: unlinkError } = await supabase
+        .from('kanban_cards')
+        .update({ linked_plan_id: null })
+        .eq('linked_plan_id', planId)
+
+    if (unlinkError) {
+        console.error('Error unlinking cards from plan:', unlinkError)
+    }
+
+    // 4. Delete the plan
     const { error } = await supabase
         .from('plans')
         .delete()
@@ -192,7 +225,39 @@ export async function deletePlan(planId: string): Promise<boolean> {
         return false
     }
 
+    // If no error, consider it a success (even if plan was already deleted)
     return true
+}
+
+export async function deleteOrphanPlans(title: string): Promise<void> {
+    // 1. Find all plans with this title
+    const { data: plans, error } = await supabase
+        .from('plans')
+        .select('id')
+        .eq('title', title)
+
+    if (error || !plans || plans.length === 0) return
+
+    const planIds = plans.map(p => p.id)
+
+    // 2. Find which of these are actually linked to cards
+    const { data: linkedCards, error: linkError } = await supabase
+        .from('kanban_cards')
+        .select('linked_plan_id')
+        .in('linked_plan_id', planIds)
+
+    if (linkError) return
+
+    const linkedPlanIds = new Set((linkedCards || []).map(c => c.linked_plan_id))
+
+    // 3. Identify orphans (Plans with NO card linking to them)
+    const orphanIds = planIds.filter(id => !linkedPlanIds.has(id))
+
+    // 4. Delete orphans
+    if (orphanIds.length > 0) {
+        console.log(`Cleaning up ${orphanIds.length} orphan plans for title "${title}"`)
+        await Promise.all(orphanIds.map(id => deletePlan(id)))
+    }
 }
 
 // ============================================
@@ -440,8 +505,26 @@ export async function updateCard(card: KanbanCard): Promise<boolean> {
                 })
 
             if (createError) {
-                console.error('Error creating linked card for metadata:', createError)
-                return false
+                console.error('Error creating linked card for metadata:', JSON.stringify(createError, null, 2))
+                // If it's a FK constraint error (plan doesn't exist), try creating without the link
+                if (createError.code === '23503') {
+                    const { error: retryError } = await supabase
+                        .from('kanban_cards')
+                        .insert({
+                            id: newCardId,
+                            title: card.title,
+                            description: card.description || null,
+                            status: card.status,
+                            start_date: card.startDate || null,
+                            end_date: card.endDate || null,
+                            linked_plan_id: null, // Skip the link if plan doesn't exist
+                            created_at: new Date().toISOString(),
+                            position: card.position || 0
+                        })
+                    if (retryError) return false
+                } else {
+                    return false
+                }
             }
 
             // Now insert the checklist/comments for this new card
@@ -525,15 +608,17 @@ export async function updateCard(card: KanbanCard): Promise<boolean> {
     // Update attachments
     await supabase.from('card_attachments').delete().eq('card_id', card.id)
     if (card.attachments.length > 0) {
-        await supabase.from('card_attachments').insert(
-            card.attachments.map(att => ({
-                id: att.id,
-                card_id: card.id,
-                type: att.type,
-                name: att.name,
-                url: att.url
-            }))
-        )
+        // Regenerate IDs to avoid collisions with plan_attachments or other tables
+        const attachmentsWithNewIds = card.attachments.map(att => ({
+            id: generateUUID(), // CRITICAL: New ID
+            card_id: card.id,
+            type: att.type,
+            name: att.name,
+            url: att.url
+        }))
+
+        const { error: attError } = await supabase.from('card_attachments').insert(attachmentsWithNewIds)
+        if (attError) console.error('Error updating card attachments:', attError)
     }
 
     return true
@@ -813,6 +898,78 @@ export async function deleteRevenue(revenueId: string): Promise<boolean> {
 
     if (error) {
         console.error('Error deleting revenue:', error)
+        return false
+    }
+
+    return true
+}
+
+// ============================================
+// CUSTOM SECTIONS - CRUD Operations
+// ============================================
+
+export interface CustomSection {
+    id: string
+    title: string
+    color: string
+    position: number
+    createdAt?: string
+}
+
+export async function fetchCustomSections(): Promise<CustomSection[]> {
+    const { data, error } = await supabase
+        .from('custom_sections')
+        .select('*')
+        .order('position', { ascending: true })
+
+    if (error) {
+        console.error('Error fetching custom sections:', error)
+        return []
+    }
+
+    return (data || []).map(s => ({
+        id: s.id,
+        title: s.title,
+        color: s.color,
+        position: s.position,
+        createdAt: s.created_at
+    }))
+}
+
+export async function createCustomSection(section: CustomSection): Promise<CustomSection | null> {
+    const { data, error } = await supabase
+        .from('custom_sections')
+        .insert({
+            id: section.id,
+            title: section.title,
+            color: section.color,
+            position: section.position
+        })
+        .select()
+        .single()
+
+    if (error) {
+        console.error('Error creating custom section:', error)
+        return null
+    }
+
+    return {
+        id: data.id,
+        title: data.title,
+        color: data.color,
+        position: data.position,
+        createdAt: data.created_at
+    }
+}
+
+export async function deleteCustomSection(sectionId: string): Promise<boolean> {
+    const { error } = await supabase
+        .from('custom_sections')
+        .delete()
+        .eq('id', sectionId)
+
+    if (error) {
+        console.error('Error deleting custom section:', error)
         return false
     }
 

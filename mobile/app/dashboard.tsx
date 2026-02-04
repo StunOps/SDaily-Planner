@@ -11,7 +11,7 @@ import { KanbanCard, Plan, Attachment } from '../lib/types';
 import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system';
 import * as MediaLibrary from 'expo-media-library';
-import { registerForPushNotificationsAsync, scheduleSmartNotifications, scheduleTodayTaskReminder, QUOTES, setupNotifications } from '../lib/notifications';
+import { registerForPushNotificationsAsync, scheduleSmartNotifications, QUOTES, setupNotifications } from '../lib/notifications';
 import CustomAlert, { AlertType } from '../components/CustomAlert';
 
 export default function Dashboard() {
@@ -72,12 +72,33 @@ export default function Dashboard() {
 
     const fetchData = async () => {
         try {
-            // Get pending count
-            const { count } = await supabase
+            const today = format(new Date(), 'yyyy-MM-dd');
+
+            // 1. Get all cards with status = 'pending'
+            const { data: pendingCards } = await supabase
                 .from('kanban_cards')
-                .select('*', { count: 'exact', head: true })
+                .select('id, linked_plan_id')
                 .eq('status', 'pending');
-            setPendingCount(count || 0);
+
+            // 2. Get IDs of plans that already have linked pending cards
+            const linkedPlanIds = new Set(
+                (pendingCards || [])
+                    .filter(c => c.linked_plan_id)
+                    .map(c => c.linked_plan_id)
+            );
+
+            // 3. Get plans with future dates (these become virtual "pending" cards in web)
+            const { data: futurePlans } = await supabase
+                .from('plans')
+                .select('id')
+                .gt('date', today)
+                .eq('completed', false);
+
+            // 4. Count only orphan future plans (not already linked to a pending card)
+            const orphanFuturePlans = (futurePlans || []).filter(p => !linkedPlanIds.has(p.id));
+
+            // 5. Total = pending cards + orphan future plans (matches web logic)
+            setPendingCount((pendingCards?.length || 0) + orphanFuturePlans.length);
 
             // Fetch inbox cards with attachments
             const { data: inbox } = await supabase
@@ -139,19 +160,16 @@ export default function Dashboard() {
         (async () => {
             await setupNotifications();
             await registerForPushNotificationsAsync();
-            await scheduleSmartNotifications();
         })();
     }, []);
 
-    // Schedule today's task reminder when plans are loaded
+    // Schedule smart notifications with task data when plans are loaded
     useEffect(() => {
-        if (todayPlans.length > 0) {
-            const pendingPlans = todayPlans.filter(p => !p.completed);
-            scheduleTodayTaskReminder(
-                pendingPlans.length,
-                pendingPlans.map(p => p.title)
-            );
-        }
+        const pendingPlans = todayPlans.filter(p => !p.completed);
+        scheduleSmartNotifications(
+            pendingPlans.length,
+            pendingPlans.map(p => p.title)
+        );
     }, [todayPlans]);
 
     // Get greeting based on time of day
@@ -422,35 +440,28 @@ export default function Dashboard() {
                         </TouchableOpacity>
                     </View>
 
-                    {/* Inbox Section */}
-                    <TouchableOpacity
-                        onPress={() => setIsInboxExpanded(!isInboxExpanded)}
-                        activeOpacity={0.9}
-                        style={{
-                            backgroundColor: '#1E1E1E',
-                            borderRadius: 16,
-                            padding: 24,
-                            marginBottom: 24,
-                            borderLeftWidth: 4,
-                            borderLeftColor: '#8B5CF6'
-                        }}
-                    >
-                        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                                <Inbox size={24} color="#8B5CF6" />
-                                <Text style={{ color: '#ccc', fontSize: 16 }}>Inbox</Text>
-                                <View style={{ backgroundColor: '#8B5CF620', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 12 }}>
-                                    <Text style={{ color: '#8B5CF6', fontSize: 12, fontWeight: 'bold' }}>{inboxCards.length}</Text>
-                                </View>
+                    {/* Inbox Section Header */}
+                    <View style={{
+                        backgroundColor: '#1E1E1E',
+                        borderRadius: 16,
+                        padding: 16,
+                        marginBottom: 8,
+                        borderLeftWidth: 4,
+                        borderLeftColor: '#8B5CF6'
+                    }}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                            <Inbox size={24} color="#8B5CF6" />
+                            <Text style={{ color: '#ccc', fontSize: 16, fontWeight: 'bold' }}>Inbox</Text>
+                            <View style={{ backgroundColor: '#8B5CF620', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 12 }}>
+                                <Text style={{ color: '#8B5CF6', fontSize: 12, fontWeight: 'bold' }}>{inboxCards.length}</Text>
                             </View>
-                            <Text style={{ color: '#666', fontSize: 12 }}>{isInboxExpanded ? 'Hide' : 'Show'}</Text>
                         </View>
-                    </TouchableOpacity>
+                    </View>
 
-                    {/* Inbox Items (Expanded) */}
-                    {isInboxExpanded && inboxCards.length > 0 && (
+                    {/* Inbox Items - Always show first 3, expand for more */}
+                    {inboxCards.length > 0 && (
                         <View style={{ marginBottom: 24 }}>
-                            {inboxCards.map(card => (
+                            {(isInboxExpanded ? inboxCards : inboxCards.slice(0, 3)).map(card => (
                                 <TouchableOpacity
                                     key={card.id}
                                     onPress={() => setViewingCard(card)}
@@ -488,6 +499,23 @@ export default function Dashboard() {
                                     </View>
                                 </TouchableOpacity>
                             ))}
+
+                            {/* Show More/Less Button */}
+                            {inboxCards.length > 3 && (
+                                <TouchableOpacity
+                                    onPress={() => setIsInboxExpanded(!isInboxExpanded)}
+                                    style={{
+                                        backgroundColor: '#2A2A2A',
+                                        borderRadius: 12,
+                                        padding: 12,
+                                        alignItems: 'center'
+                                    }}
+                                >
+                                    <Text style={{ color: '#8B5CF6', fontSize: 14 }}>
+                                        {isInboxExpanded ? 'Show Less' : `Show ${inboxCards.length - 3} More`}
+                                    </Text>
+                                </TouchableOpacity>
+                            )}
                         </View>
                     )}
 
@@ -509,29 +537,6 @@ export default function Dashboard() {
                             <Text style={{ color: '#ccc', fontSize: 16 }}>Pending Tasks</Text>
                         </View>
                         <Text style={{ color: 'white', fontSize: 48, fontWeight: 'bold' }}>{pendingCount}</Text>
-                        <Text style={{ color: '#666', marginTop: 8 }}>Tap to see full list</Text>
-                    </TouchableOpacity>
-
-                    {/* Due Today Card */}
-                    <TouchableOpacity
-                        onPress={() => router.push('/tasks?type=due')}
-                        activeOpacity={0.9}
-                        style={{
-                            backgroundColor: '#1E1E1E',
-                            borderRadius: 16,
-                            padding: 24,
-                            marginBottom: 24,
-                            borderLeftWidth: 4,
-                            borderLeftColor: '#E11D48'
-                        }}
-                    >
-                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-                            <Clock size={24} color="#E11D48" />
-                            <Text style={{ color: '#ccc', fontSize: 16 }}>Due Today</Text>
-                        </View>
-                        <Text style={{ color: 'white', fontSize: 48, fontWeight: 'bold' }}>
-                            {todayPlans.filter(p => !p.completed).length}
-                        </Text>
                         <Text style={{ color: '#666', marginTop: 8 }}>Tap to see full list</Text>
                     </TouchableOpacity>
                 </ScrollView>

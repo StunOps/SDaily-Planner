@@ -63,13 +63,12 @@ export async function registerForPushNotificationsAsync() {
     }
 }
 
-// Schedule 7 days of unique motivational quotes
-export async function scheduleSmartNotifications() {
+// Schedule 7 days of morning notifications with quotes + task reminders
+export async function scheduleSmartNotifications(todayTaskCount?: number, taskTitles?: string[]) {
     try {
-        // Cancel all effectively to reset the queue (simple approach for V1)
+        // Cancel all to reset the queue
         await Notifications.cancelAllScheduledNotificationsAsync();
 
-        // Schedule for next 7 days
         const now = new Date();
 
         for (let i = 0; i < 7; i++) {
@@ -77,15 +76,26 @@ export async function scheduleSmartNotifications() {
             date.setDate(date.getDate() + i);
             date.setHours(8, 0, 0, 0); // 8:00 AM
 
-            // If today is already past 8 AM, skip to next day
+            // Skip if already past 8 AM for today
             if (date <= now) continue;
 
             const quote = QUOTES[Math.floor(Math.random() * QUOTES.length)];
 
+            // Build notification body
+            let body = quote;
+
+            // Only add task info for TODAY's notification (i === 0 or next available day)
+            if (i <= 1 && todayTaskCount !== undefined && todayTaskCount > 0 && taskTitles) {
+                const taskList = taskTitles.slice(0, 3).join(', ');
+                body = `📋 ${todayTaskCount} task${todayTaskCount > 1 ? 's' : ''} due: ${taskList}${todayTaskCount > 3 ? '...' : ''}\n\n💪 ${quote}`;
+            } else if (i <= 1 && todayTaskCount === 0) {
+                body = `✅ No tasks due today!\n\n💪 ${quote}`;
+            }
+
             await Notifications.scheduleNotificationAsync({
                 content: {
-                    title: "Good Morning",
-                    body: quote,
+                    title: "Good Morning ☀️",
+                    body: body,
                     data: { type: 'daily_motivation' },
                 },
                 trigger: {

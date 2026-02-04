@@ -1,4 +1,4 @@
-import { isBefore, startOfDay, parseISO } from 'date-fns'
+import { isAfter, endOfDay, parseISO } from 'date-fns'
 
 /**
  * Converts a 24-hour time string (HH:mm) to a 12-hour format string (h:mm AM/PM).
@@ -20,7 +20,8 @@ export function formatTimeTo12h(time: string): string {
 
 /**
  * Checks if a task is overdue.
- * A task is overdue if today is after the due date (or start date if no due date) and it's not completed.
+ * A task is overdue if the current time is AFTER the end of the due date (11:59:59pm).
+ * This means a task due today only becomes overdue after midnight.
  * @param date Start date in YYYY-MM-DD format
  * @param dueDate Due date in YYYY-MM-DD format
  * @param completed Completion status
@@ -28,10 +29,11 @@ export function formatTimeTo12h(time: string): string {
 export function isOverdue(date?: string, dueDate?: string, completed?: boolean): boolean {
     if (completed || !date) return false
 
-    const today = startOfDay(new Date())
+    const now = new Date()
     const targetDateStr = dueDate || date
     if (!targetDateStr) return false
 
     const targetDate = parseISO(targetDateStr)
-    return isBefore(targetDate, today)
+    // Task is overdue if current time is AFTER the END of the target date (11:59:59pm)
+    return isAfter(now, endOfDay(targetDate))
 }

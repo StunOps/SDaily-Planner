@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { DragDropContext, Droppable, Draggable, DropResult } from '@hello-pangea/dnd'
 import { KanbanCard, CardStatus, ChecklistItem, Comment, Attachment, Plan, TimeSlot } from '@/lib/types'
-import { fetchCards, createCard, updateCard as updateCardDB, deleteCard as deleteCardDB, fetchPlans, deletePlan, updatePlan, createPlan } from '@/lib/supabaseService'
+import { fetchCards, createCard, updateCard as updateCardDB, deleteCard as deleteCardDB, fetchPlans, deletePlan, updatePlan, createPlan, deleteOrphanPlans, fetchCustomSections, createCustomSection, deleteCustomSection } from '@/lib/supabaseService'
 import { supabase } from '@/lib/supabaseClient'
 import { generateUUID } from '@/lib/uuid'
 import { Plus, X, Calendar, CheckSquare, MessageSquare, Paperclip, Link2, Trash2, Heart, Clock, FileText, Download, Eye, Image as ImageIcon, Upload, AlignLeft, Edit2, Check } from 'lucide-react'
@@ -13,8 +13,7 @@ import clsx from 'clsx'
 import { format, isToday, parseISO, isBefore, isAfter, startOfDay } from 'date-fns'
 import { formatTimeTo12h, isOverdue } from '@/lib/utils'
 
-const STORAGE_KEY = 'kanban-cards'
-const PLANNER_STORAGE_KEY = 'planner-plans'
+
 
 const DEFAULT_COLUMNS: KanbanColumn[] = [
     { id: 'inbox', title: 'Inbox', color: '#6366F1', description: 'New tasks' },
@@ -97,43 +96,58 @@ export function KanbanBoard() {
 
     const [isColumnsLoaded, setIsColumnsLoaded] = useState(false)
 
-    // Load custom columns
+    // Load custom columns from database
     useEffect(() => {
-        const savedColumns = localStorage.getItem('kanban-custom-columns')
-        if (savedColumns) {
-            setCustomColumns(JSON.parse(savedColumns))
+        const loadCustomSections = async () => {
+            const sections = await fetchCustomSections()
+            const columns: KanbanColumn[] = sections.map(s => ({
+                id: `custom-${s.id}` as CardStatus,
+                title: s.title,
+                color: s.color,
+                description: ''
+            }))
+            setCustomColumns(columns)
+            setIsColumnsLoaded(true)
         }
-        setIsColumnsLoaded(true)
+        loadCustomSections()
     }, [])
-
-    // Save custom columns
-    useEffect(() => {
-        if (isColumnsLoaded) {
-            localStorage.setItem('kanban-custom-columns', JSON.stringify(customColumns))
-        }
-    }, [customColumns, isColumnsLoaded])
 
     const allColumns = [...DEFAULT_COLUMNS, ...customColumns]
 
-    const addSection = () => {
+    const addSection = async () => {
         if (!newSectionTitle.trim()) return
+        const sectionId = generateUUID()
         const newColumn: KanbanColumn = {
-            id: `custom-${generateUUID()}`,
+            id: `custom-${sectionId}` as CardStatus,
             title: newSectionTitle.trim(),
             description: newSectionDescription.trim(),
             color: '#64748B', // Default slate color for custom sections
         }
+
+        // Optimistic update
         setCustomColumns([...customColumns, newColumn])
         setNewSectionTitle('')
         setNewSectionDescription('')
         setIsAddSectionOpen(false)
+
+        // Persist to database
+        await createCustomSection({
+            id: sectionId,
+            title: newColumn.title,
+            color: newColumn.color,
+            position: customColumns.length
+        })
     }
 
-    const deleteSection = (columnId: string) => {
+    const deleteSection = async (columnId: string) => {
         if (DEFAULT_COLUMNS.some(c => c.id === columnId)) return // Can't delete default columns
+
+        // Optimistic update
         setCustomColumns(customColumns.filter(c => c.id !== columnId))
-        // Note: Cards in this section will become "orphaned" or should be moved?
-        // Default behavior: user should move them first, or they stay filtered out.
+
+        // Persist to database (extract ID from custom-xxx format)
+        const sectionId = columnId.replace('custom-', '')
+        await deleteCustomSection(sectionId)
     }
     // Remove local isLoading, use derived one if needed, or just rely on data presence
 
@@ -159,14 +173,37 @@ export function KanbanBoard() {
                     comments: kanbanCards[existingCardIndex].comments,
                     // Preserve position from DB if it exists (for manually ordered plans)
                     position: kanbanCards[existingCardIndex].position || newCard.position,
-                    status: kanbanCards[existingCardIndex].status.startsWith('custom-')
-                        ? kanbanCards[existingCardIndex].status // Keep in custom column
-                        : kanbanCards[existingCardIndex].status === 'completed'
-                            ? 'completed'
-                            : newCard.status,
+                    // ALWAYS preserve existing status to respect user's manual column choice
+                    status: kanbanCards[existingCardIndex].status,
                 }
             } else {
-                kanbanCards.push(newCard)
+                // FALLBACK DEDUPLICATION:
+                // If a card with same title exists but isn't linked, assume it's the one (fix broken links)
+                // This prevents creating a virtual "Ghost" card if the link was just lost in DB but title matches
+                const matchingTitleIndex = kanbanCards.findIndex(c =>
+                    c.title === plan.title &&
+                    !c.linkedPlanId // Only match if it's currently unlinked (e.g. in Inbox)
+                )
+
+                if (matchingTitleIndex >= 0) {
+                    // We found the "Ghost"'s body! It's this unlinked card.
+                    // CRITICAL: Heal the link locally so that if the user unschedules it,
+                    // we know which plan to delete!
+                    kanbanCards[matchingTitleIndex] = {
+                        ...kanbanCards[matchingTitleIndex],
+                        linkedPlanId: plan.id,
+                    }
+
+                    // Suppress the virtual card
+                    return
+                }
+
+                // SAFEGUARD: Only add virtual card if no card with same virtual ID exists
+                // This prevents duplicates when state updates race
+                const virtualCardExists = kanbanCards.some(c => c.id === `plan-${plan.id}`)
+                if (!virtualCardExists) {
+                    kanbanCards.push(newCard)
+                }
             }
         })
 
@@ -176,6 +213,16 @@ export function KanbanBoard() {
                 // If ignored, treat as "missing/deleted" from planner perspective
                 if (ignoredPlanIds.includes(card.linkedPlanId)) return false
                 return plans.some(p => p.id === card.linkedPlanId)
+            }
+            return true
+        })
+
+        // AGGRESSIVE DEDUPLICATION: If a real card and virtual plan-card represent the same plan, keep only the real card
+        const realCardPlanIds = new Set(kanbanCards.filter(c => !c.id.startsWith('plan-') && c.linkedPlanId).map(c => c.linkedPlanId))
+        kanbanCards = kanbanCards.filter(card => {
+            // If this is a virtual card and a real card with same linkedPlanId exists, remove virtual
+            if (card.id.startsWith('plan-') && card.linkedPlanId && realCardPlanIds.has(card.linkedPlanId)) {
+                return false
             }
             return true
         })
@@ -363,21 +410,49 @@ export function KanbanBoard() {
             }
 
             // Special Case: If this was a virtual plan card (starts with 'plan-'), 
-            // we must CREATE a real card to persist it, because the plan (its source) is about to be deleted.
+            // we must handle it carefully to avoid creating duplicates.
             if (updatedCard.id.startsWith('plan-')) {
                 try {
-                    const newCardId = generateUUID()
-                    const realCard: KanbanCard = {
-                        ...finalCard,
-                        id: newCardId,
-                        linkedPlanId: undefined, // Fully unlink
-                        status: finalCard.status, // Preserve accepted status
-                        createdAt: new Date().toISOString()
-                    }
+                    const planId = updatedCard.linkedPlanId || updatedCard.id.replace('plan-', '')
 
-                    // 1. Create real persistent card
-                    const created = await createCard(realCard)
-                    if (!created) throw new Error("Failed to persist card during unschedule")
+                    // CRITICAL FIX: Check if a real card already exists for this plan
+                    // If so, UPDATE it instead of creating a new one (prevents duplicates!)
+                    const existingRealCard = rawCards.find(c =>
+                        !c.id.startsWith('plan-') && c.linkedPlanId === planId
+                    )
+
+                    if (existingRealCard) {
+                        // A real card exists! Update it instead of creating new one.
+                        const updatedRealCard: KanbanCard = {
+                            ...existingRealCard,
+                            ...finalCard,
+                            id: existingRealCard.id, // Keep original ID!
+                            linkedPlanId: undefined, // Unlink from plan
+                            status: finalCard.status,
+                        }
+
+                        const success = await updateCardDB(updatedRealCard)
+                        if (!success) throw new Error("Failed to update existing card during unschedule")
+
+                        // Update local state
+                        setRawCards(prev => prev.map(c => c.id === existingRealCard.id ? updatedRealCard : c))
+                    } else {
+                        // No real card exists, create one
+                        const newCardId = generateUUID()
+                        const realCard: KanbanCard = {
+                            ...finalCard,
+                            id: newCardId,
+                            linkedPlanId: undefined, // Fully unlink
+                            status: finalCard.status,
+                            createdAt: new Date().toISOString()
+                        }
+
+                        const created = await createCard(realCard)
+                        if (!created) throw new Error("Failed to persist card during unschedule")
+
+                        // Update local state
+                        setRawCards(prev => [...prev.filter(c => c.id !== updatedCard.id), realCard])
+                    }
 
                     // 2. Delete the old plan
                     if (selectedCard?.linkedPlanId) {
@@ -387,8 +462,7 @@ export function KanbanBoard() {
                         await deletePlan(planIdToDelete)
                     }
 
-                    // 3. Optimistic Update: Replace the virtual card with the new real one
-                    setRawCards(prev => [...prev.filter(c => c.id !== updatedCard.id), realCard])
+                    // 3. Update plans state
                     setPlans(prev => prev.filter(p => p.id !== selectedCard?.linkedPlanId))
 
                     // 4. Cleanup
@@ -407,19 +481,48 @@ export function KanbanBoard() {
             }
 
             // Normal Case: It's already a real card, just delete the link
-            if (selectedCard?.linkedPlanId) {
+            // Check BOTH selectedCard AND updatedCard for linkedPlanId (in case modal state differs)
+            const planIdToDelete = updatedCard.linkedPlanId || selectedCard?.linkedPlanId
+            if (planIdToDelete) {
                 try {
-                    await deletePlan(selectedCard.linkedPlanId)
+                    // 1. Optimistic updates
+                    setIgnoredPlanIds(prev => [...prev, planIdToDelete])
+                    setPlans(prev => prev.filter(p => p.id !== planIdToDelete))
+
+                    // 2. CRITICAL: Unlink card in DB FIRST to satisfy Foreign Key constraints
+                    // If we try to delete plan while card still points to it, DB will reject delete
                     finalCard.linkedPlanId = undefined
-                } catch (err) {
+                    const unlinkSuccess = await updateCardDB(finalCard)
+                    if (!unlinkSuccess) {
+                        alert("Debug: Failed to unlink card from plan")
+                        throw new Error("Failed to unlink card")
+                    }
+
+                    // 3. Now it is safe to delete the plan
+                    // alert(`Debug: Attempting to delete plan ${planIdToDelete}`)
+                    const deleteSuccess = await deletePlan(planIdToDelete)
+                    if (!deleteSuccess) {
+                        alert(`Debug: Database failed to delete plan ${planIdToDelete}. Check console/logs.`)
+                        throw new Error("Database failed to delete plan (unknown error)")
+                    }
+
+                    // 4. CRITICAL: Cleanup any other orphan plans with same title
+                    // This handles potential double-creation race conditions or zombies
+                    await deleteOrphanPlans(finalCard.title)
+                    // alert("Debug: Plan deleted successfully")
+
+                } catch (err: any) {
                     console.error("Failed to delete linked plan during clear:", err)
+                    alert(`Debug Error: ${err.message}`)
+                    // Revert ignored list on failure - though if unlink succeeded but delete failed, we are in weird state
+                    // best to keep it ignored locally
                 }
             }
         }
         // 2. Handle Plan Sync/Creation Case
         else if (finalCard.startDate) {
-            // Auto-categorize based on dates if not completed AND not in a custom section
-            if (finalCard.status !== 'completed' && !finalCard.status.startsWith('custom-')) {
+            // Auto-categorize based on date WHENEVER a date is set (unless in custom section)
+            if (!finalCard.status.startsWith('custom-')) {
                 const today = startOfDay(new Date())
                 const startDate = parseISO(finalCard.startDate)
                 const endDate = finalCard.endDate ? parseISO(finalCard.endDate) : startDate
@@ -436,7 +539,26 @@ export function KanbanBoard() {
             // Create or update plan
             if (!finalCard.linkedPlanId) {
                 const planId = await createPlanFromCard(finalCard)
-                if (planId) finalCard.linkedPlanId = planId
+                if (planId) {
+                    finalCard.linkedPlanId = planId
+                    // CRITICAL: Update rawCards FIRST so card has linkedPlanId
+                    // BEFORE we add the plan to state (which triggers useEffect)
+                    setRawCards(prev => prev.map(c => c.id === finalCard.id ? finalCard : c))
+
+                    // Now add the new plan to local state
+                    const newPlan: Plan = {
+                        id: planId,
+                        title: finalCard.title,
+                        description: finalCard.description || '',
+                        date: finalCard.startDate!,
+                        hasDueDate: !!(finalCard.endDate && finalCard.startDate !== finalCard.endDate),
+                        dueDate: finalCard.endDate,
+                        attachments: finalCard.attachments,
+                        completed: finalCard.status === 'completed',
+                        createdAt: finalCard.createdAt,
+                    }
+                    setPlans(prev => [...prev, newPlan])
+                }
             } else {
                 await syncCardToPlanner(finalCard)
             }
@@ -446,6 +568,7 @@ export function KanbanBoard() {
         if (!finalCard.startDate && selectedCard?.linkedPlanId) {
             setPlans(prev => prev.filter(p => p.id !== selectedCard.linkedPlanId))
         }
+        // Always update rawCards for existing cards (the plan creation block already handles new linkedPlanId case)
         setRawCards(prev => prev.map(c => c.id === finalCard.id ? finalCard : c))
 
         // 4. Persist to Database
@@ -454,7 +577,11 @@ export function KanbanBoard() {
             if (!success) throw new Error("Could not update card in database.")
 
             // 5. Force Refreshes and Close
-            refreshAll(true) // Silent refresh
+            // IMPORTANT: Skip refreshAll when clearing dates to avoid refetching deleted plan
+            // before DB deletion propagates (causes ghost cards)
+            if (finalCard.startDate) {
+                refreshAll(true) // Silent refresh only if NOT clearing dates
+            }
             setIsModalOpen(false)
             setSelectedCard(null)
         } catch (err: any) {
@@ -1332,6 +1459,21 @@ function CardModal({ card, onClose, onUpdate, onDelete, isDark }: CardModalProps
                             )}
                         />
                         <button
+                            onClick={() => handleSave()}
+                            disabled={isSubmitting}
+                            className={clsx(
+                                "px-4 py-2 rounded-lg font-medium transition-colors mr-2",
+                                isSubmitting
+                                    ? "opacity-50 cursor-not-allowed"
+                                    : "",
+                                isDark
+                                    ? "bg-[#FF9F1C] text-white hover:bg-[#E8900A]"
+                                    : "bg-[#FF9F1C] text-white hover:bg-[#E8900A]"
+                            )}
+                        >
+                            {isSubmitting ? 'Saving...' : 'Save'}
+                        </button>
+                        <button
                             onClick={() => {
                                 handleSave()
                                 onClose()
@@ -1385,8 +1527,10 @@ function CardModal({ card, onClose, onUpdate, onDelete, isDark }: CardModalProps
                                 if (!e.target.checked) {
                                     saveCardChanges()
                                 } else {
-                                    // Default to today when enabling
-                                    setStartDate(new Date().toISOString().split('T')[0])
+                                    // Default to today when enabling - use local date format
+                                    const today = new Date()
+                                    const localDate = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
+                                    setStartDate(localDate)
                                 }
                             }}
                             className="w-4 h-4 rounded border-gray-300 text-[#FF9F1C] focus:ring-[#FF9F1C]"
