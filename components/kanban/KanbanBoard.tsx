@@ -316,14 +316,25 @@ export function KanbanBoard() {
         setCards(sortedCards)
 
         // Also update rawCards to prevent useEffect from reverting status!
-        // Only update rawCards for REAL cards (not virtual plan-* cards)
         if (!updatedCard.id.startsWith('plan-')) {
+            // For real cards, update by ID
             setRawCards(prevRaw => {
                 const exists = prevRaw.find(c => c.id === updatedCard.id)
                 if (exists) {
                     return prevRaw.map(c => c.id === updatedCard.id ? updatedCard : c)
                 }
                 return prevRaw
+            })
+        } else if (updatedCard.linkedPlanId) {
+            // For virtual plan cards, update any linked real card in rawCards
+            // This prevents the useEffect from finding the old status and reverting
+            setRawCards(prevRaw => {
+                return prevRaw.map(c => {
+                    if (c.linkedPlanId === updatedCard.linkedPlanId) {
+                        return { ...c, status: newStatus, position: newPosition }
+                    }
+                    return c
+                })
             })
         }
 
@@ -334,6 +345,14 @@ export function KanbanBoard() {
             // It's a virtual plan card, update the underlying plan
             const status = updatedCard.status
             const completed = status === 'completed'
+
+            // CRITICAL FIX: Optimistically update plans state to prevent useEffect from reverting
+            // This ensures determineCardStatus will return 'completed' even before DB persists
+            if (completed) {
+                setPlans(prevPlans => prevPlans.map(p =>
+                    p.id === updatedCard.linkedPlanId ? { ...p, completed: true } : p
+                ))
+            }
 
             const planUpdate = {
                 id: updatedCard.linkedPlanId,
@@ -362,6 +381,12 @@ export function KanbanBoard() {
                 setCards(prev => prev.map(c =>
                     c.id === draggableId ? cardLike : c
                 ))
+                // Also revert plans state if failed
+                if (completed) {
+                    setPlans(prevPlans => prevPlans.map(p =>
+                        p.id === updatedCard.linkedPlanId ? { ...p, completed: false } : p
+                    ))
+                }
             })
 
         } else {
@@ -590,30 +615,48 @@ export function KanbanBoard() {
     }
 
     const deleteCard = async (cardId: string) => {
-        // Find card in the combined list (including virtual ones), not just raw DB cards
+        // Capture card data immediately before any state changes
         const card = cards.find(c => c.id === cardId)
+        const linkedPlanId = card?.linkedPlanId
 
-        // Optimistic update
-        setRawCards(prev => prev.filter(c => c.id !== cardId)) // Won't hurt if not in rawCards
-        if (card?.linkedPlanId) {
-            setPlans(prev => prev.filter(p => p.id !== card.linkedPlanId))
-            // Also add to ignore list to prevent ghosts
-            setIgnoredPlanIds(prev => [...prev, card.linkedPlanId!])
+        // Optimistic update - update all relevant state synchronously
+        // 1. Update rawCards
+        setRawCards(prev => prev.filter(c => c.id !== cardId))
+
+        // 2. Update plans if linked
+        if (linkedPlanId) {
+            setPlans(prev => prev.filter(p => p.id !== linkedPlanId))
+            // Add to ignore list to prevent ghost cards from realtime/refresh
+            setIgnoredPlanIds(prev => [...prev, linkedPlanId])
         }
 
-        // Background persistence
-        if (card?.linkedPlanId) {
-            await deletePlan(card.linkedPlanId)
-        }
+        // 3. Also update the derived cards state directly for immediate UI feedback
+        // This prevents the card from reappearing before the useEffect processes the changes
+        setCards(prev => prev.filter(c => c.id !== cardId))
 
-        // Only delete from DB if it's a real card (not virtual plan-card)
-        if (!cardId.startsWith('plan-')) {
-            await deleteCardDB(cardId)
-        }
-
-        refreshAll(true)
+        // Close modal immediately
         setIsModalOpen(false)
         setSelectedCard(null)
+
+        // Fire-and-forget background persistence (non-blocking)
+        // This allows rapid deletion without waiting for DB
+        const deleteFromDB = async () => {
+            try {
+                if (linkedPlanId) {
+                    await deletePlan(linkedPlanId)
+                }
+                // Only delete from DB if it's a real card (not virtual plan-card)
+                if (!cardId.startsWith('plan-')) {
+                    await deleteCardDB(cardId)
+                }
+            } catch (error) {
+                console.error('Failed to delete card from database:', error)
+                // Errors are logged but don't block UI - realtime subscription will eventually sync
+            }
+        }
+
+        // Start deletion but don't await it
+        deleteFromDB()
     }
 
     const openCard = (card: KanbanCard) => {

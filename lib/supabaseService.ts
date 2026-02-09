@@ -487,7 +487,7 @@ export async function updateCard(card: KanbanCard): Promise<boolean> {
                 id: realCardId,
                 attachments: []
             })
-        } else if (card.checklist.length > 0 || card.comments.length > 0 || typeof card.position === 'number') {
+        } else if (card.checklist.length > 0 || card.comments.length > 0 || typeof card.position === 'number' || card.status === 'completed') {
             // No real card exists, but we have data to save, so CREATE one
             const newCardId = generateUUID()
             const { error: createError } = await supabase
